@@ -1,7 +1,7 @@
 <!-- Dev specification skeleton for the project. Fill sections with details later. -->
 # Developer Specification (DEV_SPEC)
 
-> 版本：0.1 — 文档结构草案
+> 版本：0.2 — DataIntelligent 升级规划（设计更新中）
 
 ## 目录
 
@@ -16,55 +16,63 @@
 ---
 
 ## 1. 项目概述
-本项目基于多阶段检索增强生成（RAG, Retrieval-Augmented Generation）与模型上下文协议（MCP, Model Context Protocol）设计，目标是搭建一个可扩展、高可观测、易迭代的智能问答与知识检索框架。
+DataIntelligent 是一个面向数据智能问答场景的 MCP Server。
 
-### 设计理念 (Design Philosophy)
+系统通过标准 Model Context Protocol（MCP）协议，为 Claude、Codex 等 MCP Client 提供统一的数据智能能力。用户通过自然语言提出与数据相关的问题，MCP Client 根据问题选择 DataIntelligent 提供的业务工具，由 Server 完成知识检索、数据资产探索、数据查询及数据分析等任务，并将结构化结果返回给 Client。
 
-> **核心定位：自学与教学同步 (Learning by Teaching)**
-> 
-> 本项目是我个人技术学习、丰富简历、备战面试的实战历程，同时也是一份同步教学的开源资源。我相信"**教是最好的学**"——在整理代码、撰写文档、录制视频的过程中，我自己对 RAG 的理解也在不断深化。希望这份"边学边教"的成果能够帮助到更多同样在求职路上的朋友。
+本次 V0.2 升级计划以 MySQL 作为首个结构化数据源，同时保留现有 RAG 能力，用于检索指标定义、数据字典、字段说明、业务规则等数据相关知识文档。MySQL 的具体接入方案将在后续阶段单独设计和实现。
 
-本项目不仅是一个功能完备的智能问答框架，更是一个专为 **RAG 技术学习与面试求职** 设计的实战平台：
+### 1.1 产品定位
 
-#### 1️⃣ 实战驱动学习 (Learn by Doing)
-项目架构本身就是 RAG 面试题的"**活体答案**"。我们将经典面试考点直接融入代码设计，通过动手实践来巩固理论知识：
-- 分层检索 (Hierarchical Retrieval)
-- Hybrid Search (BM25 + Dense Embedding)
-- Rerank 重排序机制
-- Embedding 策略与优化
-- RAG 性能评测 (Ragas/DeepEval)
+DataIntelligent 的核心定位不是通用 RAG 框架，也不是数据库 MCP 的简单封装，而是：
 
-#### 2️⃣ 开箱即用与深度扩展并重 (Plug-and-Play & Extensible)
-- **开箱即用**：提供 MCP 标准接口，可直接对接 Copilot/Claude，拿到项目即可运行体验。
-- **深度扩展**：保留完全模块化的内部结构，方便开发者替换组件、魔改算法，作为具备深度的个人简历项目。
-- **扩展指引**：文档中会明确指出各模块的扩展方向与建议，帮助你在掌握基础后继续深入迭代。
+> **面向数据智能问答场景的业务级 MCP Server。**
 
-#### 3️⃣ 配套教学资源 (Comprehensive Learning Materials)
-我会提供**三位一体**的配套学习资源，帮助你快速吃透项目：
+DataIntelligent 对外通过 MCP 暴露业务级 Tools；对内通过 Knowledge Engine、MySQL DataSource 等组件完成具体任务。
 
-| 资源类型 | 内容说明 |
-|---------|---------|
-| 📄 **技术文档** | 架构设计文档、技术选型说明、模块详解 |
-| 💻 **代码示范** | 带详细注释的源码、关键模块的 Step-by-step 实现 |
-| 🎬 **视频讲解** | RAG 核心知识点回顾、代码细节精讲、环境配置教程 |
+### 1.2 产品范围
 
-#### 4️⃣ 学习路线与面试指南 (Study Guide & Interview Prep)
-针对每个模块，我会整理：
-- **📚 知识点清单**：这块涉及哪些理论知识需要提前学习（如 BM25 原理、FAISS 索引类型、Cross-Encoder vs Bi-Encoder）
-- **❓ 高频面试题**：结合项目代码讲解常见面试问题及参考答案
-- **📝 简历撰写建议**：如何将本项目的亮点写进简历，突出技术深度
+本次 V0.2 升级聚焦于 MySQL 数据智能问答场景：
 
-#### 5️⃣ 社区交流与持续迭代 (Community & Iteration)
-- **经验分享**：我自己的面试经历、大家使用本项目面试的反馈，都会汇总沉淀
-- **问题讨论**：一起探讨"如何将本项目写进简历"、"针对本项目的面试题怎么答"
-- **持续更新**：从代码 → 八股知识 → 面试技巧，形成完整的求职知识库，帮助大家更好地拿到 Offer 🎯
+- 支持数据知识文档的检索；
+- 支持 MySQL 数据资产的发现与理解；
+- 支持基于自然语言的数据查询；
+- 为数据分析及查询解释能力预留扩展；
+- 通过 MCP 协议供 Claude、Codex 等 MCP Client 直接接入。
+
+本次 V0.2 升级暂不考虑：
+
+- 多数据库统一适配；
+- DataIntelligent Server 内部 Intent Router；
+- 复杂 Agent Workflow。
+
 
 ---
 
 ## 2. 核心特点
 
-### RAG 策略与设计亮点
-本项目在 RAG 链路的关键环节采用了经典的工程化优化策略，平衡了检索的查准率与查全率，具体思想如下：
+### 2.1 MCP 原生的数据智能能力
+
+DataIntelligent 以 MCP Server 作为产品对外接口，为 MCP Client 提供面向数据任务的业务级 Tools。MCP Client 负责根据用户问题选择合适的 Tool，DataIntelligent Server 负责执行对应业务能力并返回结构化结果。
+
+### 2.2 Knowledge + Metadata + Data 三层数据智能模型
+
+DataIntelligent 将数据智能问题涉及的信息划分为三个层次：
+
+| 类型 | 核心问题 | 主要来源 |
+|------|----------|----------|
+| Knowledge | 这个指标/业务概念是什么意思？ | RAG 知识库 |
+| Metadata | 数据在哪里？有哪些表和字段？ | MySQL Schema / 数据资产（规划） |
+| Data | 实际数据是多少？ | MySQL Query（规划） |
+
+
+### 2.3 RAG 策略与设计亮点
+本项目在 RAG 链路的关键环节采用了经典的工程化优化策略，平衡了检索的查准率与查全率，现有 RAG 能力作为 DataIntelligent 内部的 Knowledge Engine 内容。
+
+RAG 主要用于检索：
+指标定义；数据字典；表说明；字段业务含义；业务规则；数据标准；其他数据相关知识文档。
+
+RAG 通过 `search_knowledge` MCP Tool 对外提供知识检索能力。具体思想如下：
 - **分块策略 (Chunking Strategy)**：采用智能分块与上下文增强，为高质量检索打下基础。
     - **智能分块**：摒弃机械的定长切分，采用语义感知的切分策略以保留完整语义；
     - **上下文增强**：为 Chunk 注入文档元数据（标题、页码）和图片描述（Image Caption），确保检索时不仅匹配文本，还能感知上下文。
@@ -76,7 +84,7 @@
 	- 采用 Cross-Encoder（专用重排模型）或 LLM Rerank（可选后端）对候选集进行逐一打分，识别细微的语义差异。
     - 通过 **"粗排(低成本泛召回) -> 精排(高成本精过滤)"** 的两段式架构，在不牺牲整体响应速度的前提下大幅提升 Top-Results 的精准度。
 
-### 全链路可插拔架构 (Pluggable Architecture)
+### 2.4 全链路可插拔架构 (Pluggable Architecture)
 鉴于 AI 技术的快速演进，本项目在架构设计上追求**极致的灵活性**，拒绝与特定模型或供应商强绑定。**整个系统**（不仅是 RAG 链路）的每一个核心环节均定义了抽象接口，支持"乐高积木式"的自由替换与组合：
 
 - **LLM 调用层插拔 (LLM Provider Agnostic)**：
@@ -105,7 +113,7 @@
 
 这种设计确保开发者可以**零代码修改**即可进行 A/B 测试、成本优化或隐私迁移，使系统具备极强的生命力与环境适应性。
 
-### MCP 生态集成 (Copilot / ReSearch)
+### 2.5 MCP 生态集成 (Copilot / ReSearch)
 本项目的核心设计完全遵循 Model Context Protocol (MCP) 标准，这使得它不仅是一个独立的问答服务，更是一个即插即用的知识上下文提供者。
 
 - **工作原理**：
@@ -117,7 +125,7 @@
     - **上下文互通**：Copilot 可以同时看到你的代码文件和我们的知识库内容，进行更深度的推理。
     - **标准兼容**：任何支持 MCP 的 AI Agent（不仅是 Copilot）都可以即刻接入我们的知识库，一次开发，处处可用。
 
-### 多模态图像处理 (Multimodal Image Processing)
+### 2.6 多模态图像处理 (Multimodal Image Processing)
 本项目采用了经典的 **"Image-to-Text" (图转文)** 策略来处理文档中的图像内容，实现了低成本且高效的多模态检索：
 - **图像描述生成 (Captioning)**：利用 LLM 的视觉能力，自动提取文档中插图的核心信息，并生成详细的文字描述（Caption）。
 - **统一向量空间**：将生成的图像描述文字直接嵌入到文档文本块（Chunk）中进行向量化。
@@ -125,7 +133,7 @@
     - **架构统一**：无需引入复杂的 CLIP 等多模态向量库，复用现有的纯文本 RAG 检索链路即可实现“搜文字出图”。
     - **语义对齐**：通过 LLM 将图像的视觉特征转化为语义理解，使用户能通过自然语言精准检索到图表、流程图等视觉信息。
 
-### 可观测性、可视化管理与评估体系 (Observability, Visual Management & Evaluation)
+### 2.7 可观测性、可视化管理与评估体系 (Observability, Visual Management & Evaluation)
 针对 RAG 系统常见的“黑盒”问题，本项目致力于让每一次生成过程都**透明可见**且**可量化**，并提供完整的**本地可视化管理平台**：
 - **全链路白盒化 (White-box Tracing)**：
     - 记录并可视化 RAG 流水线的每一个中间状态：覆盖 Ingestion（加载→切分→增强→编码→存储）与 Query（查询预处理→Dense/Sparse 召回→融合→重排→响应构建）两条完整链路。
@@ -142,28 +150,6 @@
 - **自动化评估闭环 (Automated Evaluation)**：
     - 集成 Ragas 等评估框架（可插拔），为每一次检索和生成计算“体检报告”（如召回率 Hit Rate、准确性 Faithfulness 等指标）。
     - 拒绝“凭感觉”调优，建立基于数据的迭代反馈回路，确保每一次策略调整（如修改 Chunk Size 或更换 Reranker）都有量化的分数支撑。
-
-### 业务可扩展性 (Extensibility for Your Own Projects)
-本项目采用**通用化架构设计**，不仅是一个开箱即用的知识问答系统，更是一个可以快速适配各类业务场景的**扩展基座**：
-
-- **Agent 客户端扩展 (Build Your Own Agent Client)**：
-    - 本项目的 MCP Server 天然支持被各类 Agent 调用，你可以基于此构建属于自己的 Agent 客户端：
-        - **学习 Agent 开发**：通过实现一个调用本 Server 的 Agent，深入理解 Agent 的核心概念（Tool Calling、Chain of Thought、ReAct 模式等）；
-        - **定制业务 Agent**：结合你的具体业务需求，开发专属的智能助手（如代码审查 Agent、文档写作 Agent、客服问答 Agent）；
-        - **多 Agent 协作**：将本 Server 作为知识检索 Agent，与其他功能 Agent（如代码生成、任务规划）组合，构建复杂的 Multi-Agent 系统。
-
-- **业务场景快速适配 (Adapt to Your Domain)**：
-    - **数据层扩展**：只需替换数据源（接入你自己的文档、数据库、API），即可将本系统改造为你的私有知识库；
-    - **检索逻辑定制**：基于可插拔架构，轻松调整检索策略以适配不同业务特点（如电商搜索偏重关键词、法律文档偏重语义）；
-    - **Prompt 模板定制**：修改系统 Prompt 和输出格式，使其符合你的业务风格与专业术语。
-
-- **学习与实战并重 (Learn While Building)**：
-    - 通过扩展本项目，你将同步掌握：
-        - **Agent 架构设计**：Function Calling、Tool Use、Memory 管理等核心概念；
-        - **LLM 应用工程化**：Prompt Engineering、Token 优化、流式输出等实战技能；
-        - **系统集成能力**：如何将 AI 能力嵌入现有业务系统，构建端到端的智能应用。
-
-这种设计让本项目不仅是"学完即弃"的 Demo，而是可以**持续迭代、真正落地**的工程化模板，帮助你将学到的知识转化为实际项目经验。
 
 
 ## 3. 技术选型
@@ -348,16 +334,23 @@
 			- 默认策略面向通用框架与 CPU 环境：优先保证“可用与可控”，Cross-Encoder/LLM 均为可选增强。
 			- 当精排不可用/超时/失败时，必须回退到融合阶段的排序（RRF Top-K），确保系统可用性与结果稳定性。
 
-### 3.2 MCP 服务设计 (MCP Service Design)
 
-**目标：** 设计并实现一个符合 Model Context Protocol (MCP) 规范的 Server，使其能够作为知识上下文提供者，无缝对接主流 MCP Clients（如 GitHub Copilot、Claude Desktop 等），让用户通过现有 AI 助手即可查询私有知识库。
 
-#### 3.2.1 核心设计理念
+### 3.2 MCP Server 设计
 
-- **协议优先 (Protocol-First)**：严格遵循 MCP 官方规范（JSON-RPC 2.0），确保与任何合规 Client 的互操作性。
-- **开箱即用 (Zero-Config for Clients)**：Client 端无需任何特殊配置，只需在配置文件中添加 Server 连接信息即可使用全部功能。
-- **引用透明 (Citation Transparency)**：所有检索结果必须携带完整的来源信息，支持 Client 端展示"回答依据"，增强用户对 AI 输出的信任。
-- **多模态友好 (Multimodal-Ready)**：返回格式应支持文本与图像等多种内容类型，为未来的富媒体展示预留扩展空间。
+**目标：** 构建一个符合 Model Context Protocol（MCP）规范的数据智能 Server，使 Claude、Codex 等 MCP Client 能够直接接入 DataIntelligent，并通过自然语言问题调用数据知识检索、数据资产探索、数据查询等业务级能力。
+
+DataIntelligent 本身是最终产品的 MCP Server，对外提供统一的数据智能接口；V0.2 计划在保留现有 RAG Knowledge Engine 的基础上接入 MySQL 数据源。具体的数据源接入方式尚待后续设计。
+
+### 3.2.1 核心设计理念
+
+- **MCP First**：DataIntelligent 以 MCP Server 作为统一对外接口。
+- **Business Tool First**：对外暴露业务级能力，而不是数据库底层操作函数。
+- **Client-side Tool Selection**：当前 Tool 数量较少，由 MCP Client 侧 LLM 根据 Tool 的名称、描述和输入 Schema 自主选择。
+- **Tool Independence**：Business Tool 之间保持独立，不在 Tool 内部隐式调用其他 Business Tool。
+- **Composable Tools**：一个用户问题可以由 MCP Client 同时调用多个 Tool，由 Client 负责组合不同 Tool 的结果。
+- **Knowledge + Metadata + Data**：通过 RAG、MySQL Metadata 和 MySQL Data Query 共同完成数据智能任务。
+- **可扩展性**：V0.2 将以 MySQL 作为首个结构化数据源；上层 Business Tool 不与具体数据库产品强绑定。
 
 #### 3.2.2 传输协议：Stdio 本地通信
 
@@ -389,20 +382,33 @@
 
 #### 3.2.4 对外暴露的工具函数设计 (Tools Design)
 
-Server 通过 `tools/list` 向 Client 注册可调用的工具函数。工具设计应遵循"单一职责、参数明确、输出丰富"原则。
+DataIntelligent 对外暴露 Business Tool，而不是直接暴露 MySQL 底层操作函数或 RAG Pipeline 内部组件。
 
-- **核心工具集**：
+当前规划的 Business Tools 包括：
 
-| 工具名称 | 功能描述 | 典型输入参数 | 输出特点 |
-|---------|---------|-------------|---------|
-| `query_knowledge_hub` | 主检索入口，执行混合检索 + Rerank，返回最相关片段 | `query: string`, `top_k?: int`, `collection?: string` | 返回带引用的结构化结果 |
-| `list_collections` | 列举知识库中可用的文档集合 | 无 | 集合名称、描述、文档数量 |
-| `get_document_summary` | 获取指定文档的摘要与元信息 | `doc_id: string` | 标题、摘要、创建时间、标签 |
+| 工具名称 | 核心职责 | 状态 |
+|---------|---------|------|
+| `search_knowledge` | 检索指标定义、数据字典、业务规则及其他数据知识 | P0 |
+| `search_data_assets` | 搜索和发现可用的数据资产 | P0 |
+| `get_data_asset` | 获取指定数据资产的结构、字段及相关元数据 | P0 |
+| `query_data` | 根据自然语言需求查询实际数据 | P0 |
+| `analyze_data` | 对查询结果进行进一步的数据分析 | P1 |
+| `explain_query` | 解释数据查询逻辑、SQL 及结果来源 | P1 |
 
-- **扩展工具（Agentic 演进方向）**：
-	- `search_by_keyword` / `search_by_semantic`：拆分独立的检索策略，供 Agent 自主选择。
-	- `verify_answer`：事实核查工具，检测生成内容是否有依据支撑。
-	- `list_document_sections`：浏览文档目录结构，支持多步导航式检索。
+> 注：本节暂仅定义 Tool 的业务职责。具体 inputSchema、outputSchema、参数约束和返回结构将在后续 Tool Design 阶段单独确定。
+
+#### Tool 独立性原则
+
+各 Business Tool 必须保持独立执行：
+
+- Tool A 不得在内部隐式调用 Tool B；
+- Tool 不负责对其他 Business Tool 进行路由；
+- 多 Tool 协作由 MCP Client 侧 LLM 完成；
+- MCP Client 可以根据用户问题同时调用多个 Business Tool。
+
+例如：
+
+`search_knowledge`、`get_data_asset` 和 `query_data` 可以针对同一个用户问题分别执行，但三者之间不存在嵌套调用关系。
 
 #### 3.2.5 返回内容与引用透明设计 (Response & Citation Design)
 
@@ -1937,6 +1943,8 @@ dashboard:
    - 目的：实现 RagasEvaluator + CompositeEvaluator + EvalRunner，启用评估面板页面，建立 golden test set 回归基线。
 9. **阶段 I：端到端验收与文档收口**
    - 目的：补齐 E2E 测试（MCP Client 模拟 + Dashboard 冒烟），完善 README，全链路验收，确保“开箱即用 + 可复现”。
+10. **阶段 J：DataIntelligent 数据智能 MCP Server 升级**
+   - 目的：在既有 RAG MCP Server 基础上，完成数据智能产品定位、MySQL 接入方案与业务级能力的设计和实现。
 
 
 ---
@@ -2060,6 +2068,20 @@ dashboard:
 | I4 | 清理接口一致性（契约测试补齐） | [x] | 2026-02-24 | VectorStore+Reranker+Evaluator边界测试+83测试全绿 |
 | I5 | 全链路 E2E 验收 | [x] | 2026-02-24 | 1198单元+30e2e通过,ingest/query/evaluate脚本验证 |
 
+#### 阶段 J：DataIntelligent 数据智能 MCP Server 升级
+
+| 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
+|---------|---------|------|---------|------|
+| J1 | 产品定位与架构模型调整 | [~] | - | V0.2 设计更新中 |
+| J2 | Knowledge Engine 重构与知识检索能力定义 | [ ] | - | 待设计 |
+| J3 | MySQL DataSource 建设 | [ ] | - | 接入方式待选型与讨论 |
+| J4 | 数据资产探索能力建设 | [ ] | - | 待设计 |
+| J5 | 自然语言数据查询能力建设 | [ ] | - | 待设计 |
+| J6 | 数据分析与查询解释能力预留 | [ ] | - | 待设计 |
+| J7 | Business Tool 的 Schema 定义与 MCP 注册 | [ ] | - | Tool 设计完成后实施 |
+| J8 | Claude / Codex MCP Client 兼容性验证 | [ ] | - | 待实施 |
+| J9 | 数据智能核心场景 E2E 验收 | [ ] | - | 待实施 |
+
 ---
 
 ### 📈 总体进度
@@ -2075,7 +2097,8 @@ dashboard:
 | 阶段 G | 6 | 6 | 100% |
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
-| **总计** | **68** | **68** | **100%** |
+| 阶段 J | 9 | 0 | 0% |
+| **总计** | **77** | **68** | **88%** |
 
 
 ---
@@ -3157,6 +3180,24 @@ dashboard:
 
 ---
 
+### 阶段 J：DataIntelligent 数据智能 MCP Server 升级
+
+**目标：** 将现有 RAG MCP Server 升级为面向数据智能问答场景的 MCP Server。
+
+> **当前状态：** 本阶段处于设计更新中。MySQL 接入方式与 Business Tool 的具体设计尚未确定；本节不预设其实现方案，也不改变既有 Tool 的兼容策略。
+
+主要工作：
+
+- J1：产品定位与架构模型调整
+- J2：Knowledge Engine 重构与 `search_knowledge` 能力定义
+- J3：MySQL DataSource 建设
+- J4：数据资产探索能力建设
+- J5：自然语言数据查询能力建设
+- J6：数据分析与查询解释能力预留
+- J7：6 个 Business Tool 的 Schema 定义与 MCP 注册
+- J8：Claude / Codex MCP Client 兼容性验证
+- J9：数据智能核心场景 E2E 验收
+
 ### 交付里程碑（建议）
 
 - **M1（完成阶段 A+B）**：工程可测 + 可插拔抽象层就绪，后续实现可并行推进。
@@ -3164,51 +3205,52 @@ dashboard:
 - **M3（完成阶段 D+E）**：在线查询 + MCP tools 可用，可在 Copilot/Claude 中调用。
 - **M4（完成阶段 F）**：Ingestion + Query 双链路可追踪，JSON Lines 持久化。
 - **M5（完成阶段 G）**：六页面可视化管理平台就绪（评估面板为占位），数据可浏览、可管理、链路可追踪。
-- **M6（完成阶段 H+I）**：评估体系完整 + E2E 验收通过 + 文档完善，形成"面试/教学/演示"可复现项目。
+- **M6（完成阶段 H+I）**：评估体系完整 + E2E 验收通过 + 文档完善
+- **M7（完成阶段 J）**：DataIntelligent 数据智能能力完成设计、实现与核心场景验收。
 
 
 
 ## 7. 可扩展性与未来展望
 
-### 7.1 云端部署与后端架构学习
-虽然当前阶段我们主要采用“本地运行”模式，但本项目的架构设计完全支持向云端迁移。这也是一个极佳的学习后端工程化的切入点。
-- **Server 容器化**：计划编写 Dockerfile，将 MCP Server 打包为容器。这让我们有机会深入理解 Python 环境隔离、依赖管理以及 Docker 的最佳实践。
-- **云端接入**：未来可以将 Server 部署至 Azure Container Apps 或 AWS Lambda。
-    - **挑战与学习点**：处理网络延时、配置 API Gateway、增加 AuthN/AuthZ 鉴权机制（保护私有数据不被公开访问）。
-- **多租户与并发**：从单用户本地服务转变为支持团队共享的服务。
-    - **学习点**：在 Chroma 中实现 Namespace 隔离、处理并发请求锁、优化 embedding 缓存策略。
+### 7.1 数据源扩展
 
-### 7.2 业务深耕：从"通用"到"垂直" (Vertical Domain Adaptation)
-RAG 系统的上限取决于其对特定业务数据的理解深度。未来的核心扩展方向是将通用的技术框架与具体的业务场景深度结合。在将本项目应用到实际生产环境时，识别并解决以下“最后一公里”的难题，将是提升系统价值的关键：
+V0.2 计划首先支持 MySQL；具体接入方式将在阶段 J 中确定。
 
-- **多源异构数据的复杂适配**：
-    - 现实业务中不仅有 PDF，还大量存在 PPTX, DOCX, XLSX 甚至 HTML 数据。
-    - **挑战**：如何处理不同格式的特有语义？例如 PPT 中的演讲者备注往往比正文更关键，Excel 中的公式逻辑与跨行关联如何保留？目前的通用处理方式容易丢失这些“隐性知识”，未来需要针对每种格式探索更深度的解析能力。
+后续根据实际需求扩展 PostgreSQL、ClickHouse、Oracle、数据仓库等结构化数据源，同时保持 Business Tool 层的业务语义稳定。
 
-- **复杂结构化数据的精确理解**：
-    - 简单的文本切分（Chunking）在处理表格、层级列表时往往会破坏语义。
-    - **挑战**：
-        - **表格理解**：如何处理跨页长表格、合并单元格以及含有复杂表头的财务报表？如果切分不当，检索时只能找到数字却不知道对应的列名（指标含义）。
-        - **上下文断裂**：当一个完整的逻辑段落（如合同条款）被切分到两个 chunk 时，如何保证检索其中一段时能感知到整体的上下文约束？
+### 7.2 MCP Tool 生态扩展
 
-- **业务逻辑驱动的生成控制**：
-    - 仅仅根据“相似度”召回文档在企业级场景中往往不够。
-    - **挑战**：
-        - **时效性与版本管理**：当知识库中同时存在“2023版”和“2024版”规章时，如何确保系统不会混淆历史数据与最新标准？
-        - **权限与受众适配**：面对内部员工与外部客户，如何控制生成答案的详略程度与敏感信息披露？
-        - **拒答机制**：当召回内容的置信度不足时，如何让系统诚实地回答“不知道”而不是基于相关性较低的片段强行拼凑答案（幻觉问题）？
+当前版本仅提供有限数量的数据智能 Business Tools。
 
-### 7.3 迈向自主智能：Agentic RAG 的演进路径
-当前的 RAG 架构主要遵循“一次检索-一次生成”的固有范式，但在面对极其复杂的问题（如跨文档对比、多步推理）时，单一的线性流程往往力不从心。本项目作为标准的 MCP Server，天然具备向 **Agentic RAG（代理式 RAG）** 演进的潜力。这不需要重写现有代码，而是通过在 Server 端提供更细粒度的工具，赋能 Client 端的 Agent 具备更强的自主性：
+当 Tool 数量显著增长后，可进一步引入：
 
-- **从“单步检索”到“多步决策”**：
-    - 目前 Agent 可能只调用一个通用的 `search` 工具。
-    - **未来演进**：Server 可以暴露如 `list_directory`（查看目录结构）、`preview_document`（预览摘要）、`verify_fact`（事实核查）等更原子化的工具。Agent 可以像人类研究员一样，先看目录圈定范围，再针对性阅读，最后交叉验证信息，从而解决复杂问题。
-- **让 Agent 具备“反思”能力**：
-    - **未来演进**：利用现有的评估模块，Server 可以提供一个 `self_check` 接口。Agent 在生成答案后，可以自主调用该接口检测是否存在幻觉，或者检索结果是否真正支撑了论点。如果发现不足，Agent 可以自主决定进行第二轮更深度的搜索。
-- **动态策略选择**：
-    - **未来演进**：不再硬编码使用混合检索。Server 可以将 `keyword_search` 和 `semantic_search` 作为独立工具暴露。Agent 可以根据用户意图自主判断：如果是搜人名，只用关键词搜；如果是搜概念，通过语义搜。这种工具使用的灵活性正是 Agentic RAG 的核心魅力。
+- Tool Search；
+- Lazy Loading；
+- Tool Namespace；
+- 更细粒度的 Tool Metadata。
 
-这种演进方向将把本项目从一个“智能搜索引擎”升级为一个“智能研究助理”的基础设施底座。
+这些能力用于解决大规模 Tool Context 和 Tool Selection 问题，当前版本暂不实现。
 
+### 7.3 数据智能能力扩展
+
+未来可以逐步扩展：
+
+- 数据可视化；
+- 数据质量分析；
+- 指标血缘分析；
+- 数据异常检测；
+- 数据报告生成；
+- 跨数据源分析。
+
+### 7.4 MCP 生态扩展
+
+DataIntelligent 作为 MCP Server，可以持续适配更多 MCP Client。
+
+后续也可以根据实际需求探索与其他 MCP Server 的组合，但这不属于当前 V1 产品范围。
+
+### 7.5 Agentic Data Intelligence
+
+当基础 Business Tool 足够稳定后，可以进一步探索复杂数据任务的多 Tool 协同和 Agentic Workflow。
+
+该阶段重点解决复杂问题的任务分解、Tool 组合和多轮数据分析问题。
 
