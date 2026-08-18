@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-import json
-import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 class TestEvaluationPanelHelpers:
@@ -96,8 +90,9 @@ class TestEvaluationPanelImport:
         assert callable(evaluation_panel.render)
 
     def test_default_golden_path(self) -> None:
+        from src.core.settings import resolve_path
         from src.observability.dashboard.pages.evaluation_panel import (
             DEFAULT_GOLDEN_SET,
         )
 
-        assert DEFAULT_GOLDEN_SET == Path("tests/fixtures/golden_test_set.json")
+        assert DEFAULT_GOLDEN_SET == resolve_path("tests/fixtures/golden_test_set.json")

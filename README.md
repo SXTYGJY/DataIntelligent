@@ -6,6 +6,72 @@
 本项目将 RAG ——**检索（Hybrid Search + Rerank）**、**多模态视觉处理（Image Captioning）**、**RAG 评估（Ragas + Custom）**、**生成（LLM Response）**——以及当下热门的应用协议 **MCP（Model Context Protocol）** 串联为一个完整的、可运行的工程项目。
 
 
+### 环境配置（uv 快速开始）
+
+本项目使用 [uv](https://docs.astral.sh/uv/) 统一管理 Python 版本、虚拟环境与依赖，支持 Python `>=3.11,<3.14`（推荐 3.13，见 `.python-version`）。
+
+#### 1. 安装 uv
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# 或 pip install uv
+```
+
+#### 2. 一键同步环境（从 `uv sync` 开始）
+
+在项目根目录执行：
+
+```bash
+uv sync
+```
+
+该命令会：
+
+- 按 `.python-version` 自动下载 / 复用 Python 解释器；
+- 根据 `pyproject.toml` 解析依赖，并生成 / 更新 `uv.lock` 锁文件；
+- 创建 `.venv` 虚拟环境，安装全部运行时依赖与 `dev` 开发组依赖（pytest / pytest-cov / ruff / mypy 等），可直接开始开发与测试。
+
+可选扩展（Cross-Encoder 重排，需要下载本地模型）：
+
+```bash
+uv sync --extra rerank
+```
+
+#### 3. 激活环境与常用命令
+
+```bash
+source .venv/bin/activate        # 激活虚拟环境
+python -V                        # 应输出 3.13.x
+uv run python scripts/ingest.py  # 运行摄取脚本
+uv run pytest                    # 运行测试
+uv run ruff check src            # 代码检查
+uv run mypy src                  # 类型检查
+```
+
+> 不激活虚拟环境时，所有命令都可通过 `uv run <command>` 前缀直接执行。
+
+#### 4. 配置文件与验证
+
+复制凭据模板，并按需编辑 `config/settings.yaml`（LLM / Embedding 的 Provider、API Key 等）：
+
+```bash
+cp config/test_credentials.yaml.example config/test_credentials.yaml
+```
+
+验证环境与配置是否就绪：
+
+```bash
+uv run python -c "import chromadb, mcp, yaml; print('core deps OK')"
+uv run python -c "from src.core.settings import load_settings; load_settings(); print('config OK')"
+```
+
+#### 平台与版本说明
+
+- 项目已在 **macOS x86_64 + Python 3.13** 下验证通过。`chromadb` 的传递依赖 `onnxruntime>=1.24` 不再提供 macOS x86_64 wheel，`pyproject.toml` 已通过平台标记将 `onnxruntime` 限制为 `<1.24`，保证 `uv sync` 可直接成功；
+- `ragas` 需要 langchain 0.3.x 线（`langchain-community 0.4+` 移除了其依赖的 `chat_models.vertexai`），`pyproject.toml` 通过 `[tool.uv] constraint-dependencies` 固定 langchain 系列版本；
+- 代码库使用 MCP SDK 1.x API（`types.Tool.inputSchema` 等），因此 `mcp` 锁定为 `>=1.0.0,<2.0.0`。
+
+
 ### 核心能力一览
 
 | 模块 | 能力 | 说明 |

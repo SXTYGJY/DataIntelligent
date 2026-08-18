@@ -13,9 +13,9 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from src.core.settings import resolve_path
 
@@ -26,7 +26,7 @@ _DEFAULT_TRACES_PATH = resolve_path("logs/traces.jsonl")
 # ── Human-readable logger (existing) ────────────────────────────────
 
 
-def get_logger(name: str = "modular-rag", log_level: Optional[str] = None) -> logging.Logger:
+def get_logger(name: str = "modular-rag", log_level: str | None = None) -> logging.Logger:
     """Get a configured logger.
 
     Args:
@@ -79,8 +79,8 @@ class JSONFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:  # noqa: D401
         """Return the log record as a single-line JSON string."""
-        payload: Dict[str, Any] = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+        payload: dict[str, Any] = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -143,7 +143,7 @@ def get_trace_logger(
 
 
 def write_trace(
-    trace_dict: Dict[str, Any],
+    trace_dict: dict[str, Any],
     traces_path: str | Path = _DEFAULT_TRACES_PATH,
 ) -> None:
     """Append a single trace dictionary as one JSON line.

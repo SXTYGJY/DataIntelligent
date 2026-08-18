@@ -16,39 +16,38 @@ Design Principles:
 - Idempotent: SHA256-based skip for unchanged files
 """
 
-from pathlib import Path
-from typing import Callable, List, Optional, Dict, Any
 import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 from src.core.settings import Settings, load_settings, resolve_path
-from src.core.types import Document, Chunk
 from src.core.trace.trace_context import TraceContext
-from src.observability.logger import get_logger
+
+# Ingestion layer imports
+from src.ingestion.chunking.document_chunker import DocumentChunker
+from src.ingestion.embedding.batch_processor import BatchProcessor
+from src.ingestion.embedding.dense_encoder import DenseEncoder
+from src.ingestion.embedding.sparse_encoder import SparseEncoder
+from src.ingestion.storage.bm25_indexer import BM25Indexer
+from src.ingestion.storage.image_storage import ImageStorage
+from src.ingestion.storage.vector_upserter import VectorUpserter
+from src.ingestion.transform.chunk_refiner import ChunkRefiner
+from src.ingestion.transform.image_captioner import ImageCaptioner
+from src.ingestion.transform.metadata_enricher import MetadataEnricher
+from src.libs.embedding.embedding_factory import EmbeddingFactory
 
 # Libs layer imports
 from src.libs.loader.file_integrity import SQLiteIntegrityChecker
 from src.libs.loader.pdf_loader import PdfLoader
-from src.libs.embedding.embedding_factory import EmbeddingFactory
-from src.libs.vector_store.vector_store_factory import VectorStoreFactory
-
-# Ingestion layer imports
-from src.ingestion.chunking.document_chunker import DocumentChunker
-from src.ingestion.transform.chunk_refiner import ChunkRefiner
-from src.ingestion.transform.metadata_enricher import MetadataEnricher
-from src.ingestion.transform.image_captioner import ImageCaptioner
-from src.ingestion.embedding.dense_encoder import DenseEncoder
-from src.ingestion.embedding.sparse_encoder import SparseEncoder
-from src.ingestion.embedding.batch_processor import BatchProcessor
-from src.ingestion.storage.bm25_indexer import BM25Indexer
-from src.ingestion.storage.vector_upserter import VectorUpserter
-from src.ingestion.storage.image_storage import ImageStorage
+from src.observability.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class PipelineResult:
     """Result of pipeline execution with detailed statistics.
-    
+
     Attributes:
         success: Whether pipeline completed successfully
         file_path: Path to the processed file
@@ -59,17 +58,17 @@ class PipelineResult:
         error: Error message if pipeline failed
         stages: Dict of stage names to their individual results
     """
-    
+
     def __init__(
         self,
         success: bool,
         file_path: str,
-        doc_id: Optional[str] = None,
+        doc_id: str | None = None,
         chunk_count: int = 0,
         image_count: int = 0,
-        vector_ids: Optional[List[str]] = None,
-        error: Optional[str] = None,
-        stages: Optional[Dict[str, Any]] = None
+        vector_ids: list[str] | None = None,
+        error: str | None = None,
+        stages: dict[str, Any] | None = None
     ):
         self.success = success
         self.file_path = file_path
@@ -79,8 +78,8 @@ class PipelineResult:
         self.vector_ids = vector_ids or []
         self.error = error
         self.stages = stages or {}
-    
-    def to_dict(self) -> Dict[str, Any]:
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
             "success": self.success,
@@ -96,7 +95,7 @@ class PipelineResult:
 
 class IngestionPipeline:
     """Main pipeline orchestrator for document ingestion.
-    
+
     This class coordinates all stages of the ingestion process:
     - File integrity checking for incremental processing
     - Document loading (PDF with image extraction)
@@ -108,7 +107,7 @@ class IngestionPipeline:
     - Sparse encoding (BM25 term statistics)
     - Vector storage (ChromaDB)
     - BM25 index building
-    
+
     Example:
         >>> from src.core.settings import load_settings
         >>> settings = load_settings("config/settings.yaml")
@@ -116,7 +115,7 @@ class IngestionPipeline:
         >>> result = pipeline.run("documents/report.pdf", collection="contracts")
         >>> print(f"Processed {result.chunk_count} chunks")
     """
-    
+
     def __init__(
         self,
         settings: Settings,
@@ -124,7 +123,7 @@ class IngestionPipeline:
         force: bool = False
     ):
         """Initialize pipeline with all components.
-        
+
         Args:
             settings: Application settings from settings.yaml
             collection: Collection name for organizing documents
@@ -133,75 +132,75 @@ class IngestionPipeline:
         self.settings = settings
         self.collection = collection
         self.force = force
-        
+
         # Initialize all components
         logger.info("Initializing Ingestion Pipeline components...")
-        
+
         # Stage 1: File Integrity
         self.integrity_checker = SQLiteIntegrityChecker(db_path=str(resolve_path("data/db/ingestion_history.db")))
         logger.info("  ✓ FileIntegrityChecker initialized")
-        
+
         # Stage 2: Loader
         self.loader = PdfLoader(
             extract_images=True,
             image_storage_dir=str(resolve_path(f"data/images/{collection}"))
         )
         logger.info("  ✓ PdfLoader initialized")
-        
+
         # Stage 3: Chunker
         self.chunker = DocumentChunker(settings)
         logger.info("  ✓ DocumentChunker initialized")
-        
+
         # Stage 4: Transforms
         self.chunk_refiner = ChunkRefiner(settings)
         logger.info(f"  ✓ ChunkRefiner initialized (use_llm={self.chunk_refiner.use_llm})")
-        
+
         self.metadata_enricher = MetadataEnricher(settings)
         logger.info(f"  ✓ MetadataEnricher initialized (use_llm={self.metadata_enricher.use_llm})")
-        
+
         self.image_captioner = ImageCaptioner(settings)
         has_vision = self.image_captioner.llm is not None
         logger.info(f"  ✓ ImageCaptioner initialized (vision_enabled={has_vision})")
-        
+
         # Stage 5: Encoders
         embedding = EmbeddingFactory.create(settings)
         batch_size = settings.ingestion.batch_size if settings.ingestion else 100
         self.dense_encoder = DenseEncoder(embedding, batch_size=batch_size)
         logger.info(f"  ✓ DenseEncoder initialized (provider={settings.embedding.provider})")
-        
+
         self.sparse_encoder = SparseEncoder()
         logger.info("  ✓ SparseEncoder initialized")
-        
+
         self.batch_processor = BatchProcessor(
             dense_encoder=self.dense_encoder,
             sparse_encoder=self.sparse_encoder,
             batch_size=batch_size
         )
         logger.info(f"  ✓ BatchProcessor initialized (batch_size={batch_size})")
-        
+
         # Stage 6: Storage
         self.vector_upserter = VectorUpserter(settings, collection_name=collection)
         logger.info(f"  ✓ VectorUpserter initialized (provider={settings.vector_store.provider}, collection={collection})")
-        
+
         self.bm25_indexer = BM25Indexer(index_dir=str(resolve_path(f"data/db/bm25/{collection}")))
         logger.info("  ✓ BM25Indexer initialized")
-        
+
         self.image_storage = ImageStorage(
             db_path=str(resolve_path("data/db/image_index.db")),
             images_root=str(resolve_path("data/images"))
         )
         logger.info("  ✓ ImageStorage initialized")
-        
+
         logger.info("Pipeline initialization complete!")
-    
+
     def run(
         self,
         file_path: str,
-        trace: Optional[TraceContext] = None,
-        on_progress: Optional[Callable[[str, int, int], None]] = None,
+        trace: TraceContext | None = None,
+        on_progress: Callable[[str, int, int], None] | None = None,
     ) -> PipelineResult:
         """Execute the full ingestion pipeline on a file.
-        
+
         Args:
             file_path: Path to the file to process (e.g., PDF)
             trace: Optional trace context for observability
@@ -209,63 +208,63 @@ class IngestionPipeline:
                 invoked when each pipeline stage completes.  *current* is
                 the 1-based index of the completed stage; *total* is the
                 number of stages (currently 6).
-        
+
         Returns:
             PipelineResult with success status and statistics
         """
         file_path = Path(file_path)
-        stages: Dict[str, Any] = {}
+        stages: dict[str, Any] = {}
         _total_stages = 6
 
         def _notify(stage_name: str, step: int) -> None:
             if on_progress is not None:
                 on_progress(stage_name, step, _total_stages)
-        
-        logger.info(f"=" * 60)
+
+        logger.info("=" * 60)
         logger.info(f"Starting Ingestion Pipeline for: {file_path}")
         logger.info(f"Collection: {self.collection}")
-        logger.info(f"=" * 60)
-        
+        logger.info("=" * 60)
+
         try:
             # ─────────────────────────────────────────────────────────────
             # Stage 1: File Integrity Check
             # ─────────────────────────────────────────────────────────────
             logger.info("\n📋 Stage 1: File Integrity Check")
             _notify("integrity", 1)
-            
+
             file_hash = self.integrity_checker.compute_sha256(str(file_path))
             logger.info(f"  File hash: {file_hash[:16]}...")
-            
+
             if not self.force and self.integrity_checker.should_skip(file_hash):
-                logger.info(f"  ⏭️  File already processed, skipping (use force=True to reprocess)")
+                logger.info("  ⏭️  File already processed, skipping (use force=True to reprocess)")
                 return PipelineResult(
                     success=True,
                     file_path=str(file_path),
                     doc_id=file_hash,
                     stages={"integrity": {"skipped": True, "reason": "already_processed"}}
                 )
-            
+
             stages["integrity"] = {"file_hash": file_hash, "skipped": False}
             logger.info("  ✓ File needs processing")
-            
+
             # ─────────────────────────────────────────────────────────────
             # Stage 2: Document Loading
             # ─────────────────────────────────────────────────────────────
             logger.info("\n📄 Stage 2: Document Loading")
             _notify("load", 2)
-            
+
             _t0 = time.monotonic()
             document = self.loader.load(str(file_path))
             _elapsed = (time.monotonic() - _t0) * 1000.0
-            
+
             text_preview = document.text[:200].replace('\n', ' ') + "..." if len(document.text) > 200 else document.text
             image_count = len(document.metadata.get("images", []))
-            
+
             logger.info(f"  Document ID: {document.id}")
             logger.info(f"  Text length: {len(document.text)} chars")
             logger.info(f"  Images extracted: {image_count}")
             logger.info(f"  Preview: {text_preview[:100]}...")
-            
+
             stages["loading"] = {
                 "doc_id": document.id,
                 "text_length": len(document.text),
@@ -279,22 +278,22 @@ class IngestionPipeline:
                     "image_count": image_count,
                     "text_preview": document.text,
                 }, elapsed_ms=_elapsed)
-            
+
             # ─────────────────────────────────────────────────────────────
             # Stage 3: Chunking
             # ─────────────────────────────────────────────────────────────
             logger.info("\n✂️  Stage 3: Document Chunking")
             _notify("split", 3)
-            
+
             _t0 = time.monotonic()
             chunks = self.chunker.split_document(document)
             _elapsed = (time.monotonic() - _t0) * 1000.0
-            
+
             logger.info(f"  Chunks generated: {len(chunks)}")
             if chunks:
                 logger.info(f"  First chunk ID: {chunks[0].id}")
                 logger.info(f"  First chunk preview: {chunks[0].text[:100]}...")
-            
+
             stages["chunking"] = {
                 "chunk_count": len(chunks),
                 "avg_chunk_size": sum(len(c.text) for c in chunks) // len(chunks) if chunks else 0
@@ -314,13 +313,13 @@ class IngestionPipeline:
                         for i, c in enumerate(chunks)
                     ],
                 }, elapsed_ms=_elapsed)
-            
+
             # ─────────────────────────────────────────────────────────────
             # Stage 4: Transform Pipeline
             # ─────────────────────────────────────────────────────────────
             logger.info("\n🔄 Stage 4: Transform Pipeline")
             _notify("transform", 4)
-            
+
             # 4a: Chunk Refinement
             logger.info("  4a. Chunk Refinement...")
             _t0_transform = time.monotonic()
@@ -330,20 +329,20 @@ class IngestionPipeline:
             refined_by_llm = sum(1 for c in chunks if c.metadata.get("refined_by") == "llm")
             refined_by_rule = sum(1 for c in chunks if c.metadata.get("refined_by") == "rule")
             logger.info(f"      LLM refined: {refined_by_llm}, Rule refined: {refined_by_rule}")
-            
+
             # 4b: Metadata Enrichment
             logger.info("  4b. Metadata Enrichment...")
             chunks = self.metadata_enricher.transform(chunks, trace)
             enriched_by_llm = sum(1 for c in chunks if c.metadata.get("enriched_by") == "llm")
             enriched_by_rule = sum(1 for c in chunks if c.metadata.get("enriched_by") == "rule")
             logger.info(f"      LLM enriched: {enriched_by_llm}, Rule enriched: {enriched_by_rule}")
-            
+
             # 4c: Image Captioning
             logger.info("  4c. Image Captioning...")
             chunks = self.image_captioner.transform(chunks, trace)
             captioned = sum(1 for c in chunks if c.metadata.get("image_captions"))
             logger.info(f"      Chunks with captions: {captioned}")
-            
+
             stages["transform"] = {
                 "chunk_refiner": {"llm": refined_by_llm, "rule": refined_by_rule},
                 "metadata_enricher": {"llm": enriched_by_llm, "rule": enriched_by_rule},
@@ -373,24 +372,24 @@ class IngestionPipeline:
                         for c in chunks
                     ],
                 }, elapsed_ms=_elapsed_transform)
-            
+
             # ─────────────────────────────────────────────────────────────
             # Stage 5: Encoding
             # ─────────────────────────────────────────────────────────────
             logger.info("\n🔢 Stage 5: Encoding")
             _notify("embed", 5)
-            
+
             # Process through BatchProcessor
             _t0 = time.monotonic()
             batch_result = self.batch_processor.process(chunks, trace)
             _elapsed = (time.monotonic() - _t0) * 1000.0
-            
+
             dense_vectors = batch_result.dense_vectors
             sparse_stats = batch_result.sparse_stats
-            
+
             logger.info(f"  Dense vectors: {len(dense_vectors)} (dim={len(dense_vectors[0]) if dense_vectors else 0})")
             logger.info(f"  Sparse stats: {len(sparse_stats)} documents")
-            
+
             stages["encoding"] = {
                 "dense_vector_count": len(dense_vectors),
                 "dense_dimension": len(dense_vectors[0]) if dense_vectors else 0,
@@ -425,13 +424,13 @@ class IngestionPipeline:
                     "sparse_doc_count": len(sparse_stats),
                     "chunks": chunk_details,
                 }, elapsed_ms=_elapsed)
-            
+
             # ─────────────────────────────────────────────────────────────
             # Stage 6: Storage
             # ─────────────────────────────────────────────────────────────
             logger.info("\n💾 Stage 6: Storage")
             _notify("upsert", 6)
-            
+
             # 6a: Vector Upsert
             logger.info("  6a. Vector Storage (ChromaDB)...")
             _t0_storage = time.monotonic()
@@ -452,7 +451,7 @@ class IngestionPipeline:
                 trace=trace,
             )
             logger.info(f"      Index built for {len(sparse_stats)} documents")
-            
+
             # 6c: Register images in image storage index
             # Note: Images are already saved by PdfLoader, we just need to index them
             logger.info("  6c. Image Storage Index...")
@@ -468,7 +467,7 @@ class IngestionPipeline:
                         page_num=img.get("page", 0)
                     )
             logger.info(f"      Indexed {len(images)} images")
-            
+
             stages["storage"] = {
                 "vector_count": len(vector_ids),
                 "bm25_docs": len(sparse_stats),
@@ -516,19 +515,19 @@ class IngestionPipeline:
                     },
                     "chunk_mapping": chunk_storage,
                 }, elapsed_ms=_elapsed_storage)
-            
+
             # ─────────────────────────────────────────────────────────────
             # Mark Success
             # ─────────────────────────────────────────────────────────────
             self.integrity_checker.mark_success(file_hash, str(file_path), self.collection)
-            
+
             logger.info("\n" + "=" * 60)
             logger.info("✅ Pipeline completed successfully!")
             logger.info(f"   Chunks: {len(chunks)}")
             logger.info(f"   Vectors: {len(vector_ids)}")
             logger.info(f"   Images: {len(images)}")
             logger.info("=" * 60)
-            
+
             return PipelineResult(
                 success=True,
                 file_path=str(file_path),
@@ -538,11 +537,11 @@ class IngestionPipeline:
                 vector_ids=vector_ids,
                 stages=stages
             )
-            
+
         except Exception as e:
             logger.error(f"❌ Pipeline failed: {e}", exc_info=True)
             self.integrity_checker.mark_failed(file_hash, str(file_path), str(e))
-            
+
             return PipelineResult(
                 success=False,
                 file_path=str(file_path),
@@ -550,7 +549,7 @@ class IngestionPipeline:
                 error=str(e),
                 stages=stages
             )
-    
+
     def close(self) -> None:
         """Clean up resources."""
         self.image_storage.close()
@@ -558,24 +557,24 @@ class IngestionPipeline:
 
 def run_pipeline(
     file_path: str,
-    settings_path: Optional[str] = None,
+    settings_path: str | None = None,
     collection: str = "default",
     force: bool = False
 ) -> PipelineResult:
     """Convenience function to run the pipeline.
-    
+
     Args:
         file_path: Path to file to process
         settings_path: Path to settings.yaml (default: <repo>/config/settings.yaml)
         collection: Collection name
         force: Force reprocessing
-    
+
     Returns:
         PipelineResult with execution details
     """
     settings = load_settings(settings_path)
     pipeline = IngestionPipeline(settings, collection=collection, force=force)
-    
+
     try:
         return pipeline.run(file_path)
     finally:

@@ -21,10 +21,10 @@ class TestSmokeImports:
         from src import mcp_server
         assert mcp_server is not None
 
-    def test_import_mcp_server_tools(self) -> None:
-        """Test that the mcp_server.tools subpackage can be imported."""
-        from src.mcp_server import tools
-        assert tools is not None
+    def test_import_mcp_server_tool(self) -> None:
+        """Test that the mcp_server.tool subpackage can be imported."""
+        from src.mcp_server import tool
+        assert tool is not None
 
     def test_import_core(self) -> None:
         """Test that the core package can be imported."""

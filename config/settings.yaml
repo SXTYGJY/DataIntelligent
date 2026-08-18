@@ -51,7 +51,7 @@ vision_llm:
 # =============================================================================
 vector_store:
   provider: "chroma"  # Options: chroma, qdrant, pinecone
-  persist_directory: "./data/db/chroma"
+  persist_directory: "data/db/chroma"
   collection_name: "knowledge_hub"
 
 # =============================================================================
@@ -89,7 +89,7 @@ evaluation:
 observability:
   log_level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
   trace_enabled: true
-  trace_file: "./logs/traces.jsonl"
+  trace_file: "logs/traces.jsonl"
   structured_logging: true
 
 # =============================================================================

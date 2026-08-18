@@ -96,6 +96,7 @@ cache/
 logs/
 *.log
 traces.jsonl
+test_data/
 
 # Auto-coder skill cache
 .github/skills/auto-coder/.spec_hash

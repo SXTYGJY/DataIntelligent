@@ -72,7 +72,7 @@ DataIntelligent 将数据智能问题涉及的信息划分为三个层次：
 RAG 主要用于检索：
 指标定义；数据字典；表说明；字段业务含义；业务规则；数据标准；其他数据相关知识文档。
 
-RAG 通过 `search_knowledge` MCP Tool 对外提供知识检索能力。具体思想如下：
+RAG 当前通过 `query_knowledge_hub` MCP Tool 对外提供知识检索能力；`search_knowledge` 是其数据智能产品语义名称，正式更名或别名兼容策略留待后续设计。具体思想如下：
 - **分块策略 (Chunking Strategy)**：采用智能分块与上下文增强，为高质量检索打下基础。
     - **智能分块**：摒弃机械的定长切分，采用语义感知的切分策略以保留完整语义；
     - **上下文增强**：为 Chunk 注入文档元数据（标题、页码）和图片描述（Image Caption），确保检索时不仅匹配文本，还能感知上下文。
@@ -380,24 +380,148 @@ DataIntelligent 本身是最终产品的 MCP Server，对外提供统一的数�
 
 - **协议版本**：跟踪 MCP 最新稳定版本（如 `2025-06-18`），在 `initialize` 阶段进行版本协商，确保 Client/Server 兼容性。
 
-#### 3.2.4 对外暴露的工具函数设计 (Tools Design)
+#### 3.2.4 MCP Tool 抽象与工具目录 (`tool/base.py` / `tool/tool_registry.py`)
 
-DataIntelligent 对外暴露 Business Tool，而不是直接暴露 MySQL 底层操作函数或 RAG Pipeline 内部组件。
+DataIntelligent 对外暴露业务级 MCP Tool，而不是 MySQL 底层操作函数或 RAG Pipeline 内部组件。新增 `src/mcp_server/tool/` 目录：所有可调用 Tool 继承 `base.py` 中的 `BaseTool`，所有 Tool 的注册、发现和执行只经 `tool_registry.py`。MCP SDK 的 `tools/list` 与 `tools/call` 仅是 Registry 的协议适配层。
 
-当前规划的 Business Tools 包括：
+本轮不再单独引入 `ToolExecutor`：`ToolRegistry.exec()` 是唯一执行入口，集中处理 Tool 查找、调用、结果归一化和异常边界。这样可以消除当前各 Tool 分散定义注册函数与 handler 的方式，新增 Tool 不需要修改协议处理逻辑。
 
-| 工具名称 | 核心职责 | 状态 |
-|---------|---------|------|
-| `search_knowledge` | 检索指标定义、数据字典、业务规则及其他数据知识 | P0 |
-| `search_data_assets` | 搜索和发现可用的数据资产 | P0 |
-| `get_data_asset` | 获取指定数据资产的结构、字段及相关元数据 | P0 |
-| `query_data` | 根据自然语言需求查询实际数据 | P0 |
-| `analyze_data` | 对查询结果进行进一步的数据分析 | P1 |
-| `explain_query` | 解释数据查询逻辑、SQL 及结果来源 | P1 |
+##### `tool/base.py`：统一 Tool 契约
 
-> 注：本节暂仅定义 Tool 的业务职责。具体 inputSchema、outputSchema、参数约束和返回结构将在后续 Tool Design 阶段单独确定。
+`BaseTool` 是所有 MCP Tool 的抽象基类，不是具体业务 Tool。子类只实现自身业务；不得直接向 MCP `Server` 注册，也不得调用其他 Business Tool。
 
-#### Tool 独立性原则
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any
+
+from mcp import types
+
+
+@dataclass(frozen=True)
+class ToolContext:
+    """由 Registry 为一次 tools/call 创建的只读执行上下文。"""
+    request_id: str | None = None
+    settings: Any | None = None
+    trace: Any | None = None
+
+
+@dataclass
+class ToolResult:
+    """与 MCP SDK 解耦的统一成功/业务失败结果。"""
+    content: list[types.ContentBlock]
+    structured_content: dict[str, Any] | None = None
+    is_error: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class BaseTool(ABC):
+    """每个对外 MCP Tool 必须继承的最小契约。"""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any] | None = None
+    annotations: dict[str, Any] | None = None
+
+    def to_mcp_definition(self) -> types.Tool: ...
+
+    @abstractmethod
+    async def execute(
+        self,
+        arguments: dict[str, Any],
+        context: ToolContext,
+    ) -> ToolResult:
+        """执行业务逻辑；预期的业务错误返回 ToolResult(is_error=True)。"""
+```
+
+约束如下：
+
+- `name`、`description`、`input_schema` 为必填且在实例生命周期内不可变；`name` 必须符合 MCP Tool 命名约束。
+- `to_mcp_definition()` 只根据本 Tool 的元数据构造 `types.Tool`；`input_schema` 是 `tools/list` 的唯一输入 Schema 来源。
+- `execute()` 接收完整的原始 `arguments` 字典。子类负责业务相关的默认值与语义校验，不能假定调用来自 MCP SDK，因此可被单元测试直接调用。
+- 成功与可预期的业务失败均返回 `ToolResult`。未处理异常交由 Registry 记录并转为通用内部错误，绝不把堆栈返回给 Client。
+- `ToolResult.content` 的第一项必须是 `TextContent`；`structured_content`、`output_schema`、`annotations` 是为 MCP 扩展和后续治理预留的可选字段。
+
+##### `tool/tool_registry.py`：注册、发现与执行接口
+
+`ToolRegistry` 仅保存**已实现且可调用**的 `BaseTool` 实例。规划 Tool 是文档中的预留记录，不创建实例、不注册，也不会出现在 `tools/list`。
+
+```python
+class ToolRegistry:
+    def register(self, tool: BaseTool) -> None: ...
+    def unregister(self, name: str) -> BaseTool: ...
+    def get(self, name: str) -> BaseTool | None: ...
+    def list(self) -> list[BaseTool]: ...
+    def list_mcp_tools(self) -> list[types.Tool]: ...
+    async def exec(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        context: ToolContext | None = None,
+    ) -> types.CallToolResult: ...
+```
+
+| 接口 | 行为与边界 |
+|------|------------|
+| `register(tool)` | 在启动 composition root 中调用。校验 `BaseTool` 类型、必填元数据和 Schema；名称重复时抛出 `ValueError`，启动立即失败。注册后不允许静默覆盖。 |
+| `unregister(name)` | 仅用于受控关闭或测试清理；不存在时抛出 `KeyError`。生产业务代码不得在请求执行中注销 Tool。 |
+| `get(name)` | 返回已注册实例；不存在返回 `None`，不在此处构造错误响应。 |
+| `list()` | 按注册顺序返回 `BaseTool` 快照，供内部诊断和测试使用；调用方不得修改 Registry 状态。 |
+| `list_mcp_tools()` | 对 `list()` 中每个 Tool 调用 `to_mcp_definition()`，作为 `tools/list` 的唯一实现来源。 |
+| `exec(name, arguments, context)` | `tools/call` 的唯一业务入口。将空参数标准化为 `{}`，查询 Tool，调用 `await tool.execute(...)`，把 `ToolResult` 归一化为 `types.CallToolResult`。 |
+
+`exec()` 的错误语义固定如下：
+
+| 场景 | 返回 |
+|------|------|
+| Tool 不存在 | `CallToolResult(isError=True)`，文本为 `Tool '<name>' not found` |
+| 参数不是 object / Tool 参数校验失败 | `CallToolResult(isError=True)`，文本为不含堆栈的参数错误；后续可接入 JSON Schema 校验实现 |
+| `execute()` 返回 `ToolResult(is_error=True)` | 原样保留 Tool 给出的可读错误内容和结构化结果 |
+| `execute()` 抛出未处理异常 | 记录异常与 trace，返回 `CallToolResult(isError=True)`，文本为 `Internal error while executing '<name>'` |
+| 成功 | `ToolResult` 转为 `CallToolResult`，保留 `content`、`structuredContent`（SDK 支持时）及 MCP 兼容字段 |
+
+`ProtocolHandler` 只能调用 `registry.list_mcp_tools()` 和 `await registry.exec(name, arguments)`；它不得保有第二份 Tool 字典、不得 import 具体 Tool 类、不得实现 Tool 特有异常处理。
+
+执行路径固定如下：
+
+```text
+MCP tools/call
+  -> ProtocolHandler.handle_call_tool(name, arguments)
+  -> ToolRegistry.exec(name, arguments, context)
+  -> BaseTool.execute(arguments, context)
+  -> ToolResult -> types.CallToolResult
+```
+
+启动时由单一 composition root 创建依赖与 Registry，实例化 3 个已实现的 Tool 后逐一调用 `registry.register(tool)`。重复名称或缺少必填元数据必须在启动期失败。
+
+##### 当前已实现能力的 Tool 化
+
+下表是仓库当前已有代码可支撑的能力。重构后应保留其运行语义和 MCP 名称，以避免破坏现有 Client；业务别名仅用于产品语义映射，不在本轮强制新增 MCP 名称。
+
+| 当前 MCP 名称 / `BaseTool` 实现 | 现有能力与依赖 | 业务语义映射 | Registry 状态 |
+|---------|---------|---------|---------|
+| `query_knowledge_hub` / `QueryKnowledgeHubTool` | Hybrid Search、Reranker、ResponseBuilder、引用与图像内容组装 | `search_knowledge` | `implemented` |
+| `list_collections` / `ListCollectionsTool` | Chroma 持久化库的 collection 枚举和可选统计 | 知识库范围发现（不等同于 MySQL 数据资产搜索） | `implemented` |
+| `get_document_summary` / `GetDocumentSummaryTool` | 按 `doc_id` 读取 Chroma chunk，提取标题、摘要、标签及来源 | 知识文档详情（不等同于数据资产详情） | `implemented` |
+
+`query_knowledge_hub` 后续若迁移为 `search_knowledge`，必须作为显式兼容策略另行设计（例如别名或废弃窗口）；本次架构调整不改变已发布 Tool 名称。
+
+##### 规划 Tool 预留字段
+
+以下 Tool 尚无对应数据源或业务实现。它们只作为 `ToolPlan`/配置清单中的预留记录，不创建 `BaseTool` 实例、不注册到 `ToolRegistry`、不出现在 MCP Client 可发现的列表中。Schema、返回结构与权限策略保持 `TBD`，防止 Client 对尚不存在的能力产生依赖。
+
+| 预留名称 | 目标能力 | `availability` | `implementation` | `input_schema` / `output_schema` | 注册状态 |
+|---------|---------|---------|---------|---------|---------|
+| `search_data_assets` | 搜索数据库/表/字段等数据资产 | `reserved` | `None` | `TBD` | 不注册 |
+| `get_data_asset` | 返回指定资产的结构和元数据 | `reserved` | `None` | `TBD` | 不注册 |
+| `query_data` | 将自然语言请求安全地执行为数据查询 | `reserved` | `None` | `TBD` | 不注册 |
+| `analyze_data` | 对数据查询结果做分析 | `reserved` | `None` | `TBD` | 不注册 |
+| `explain_query` | 解释查询逻辑、SQL 与结果来源 | `reserved` | `None` | `TBD` | 不注册 |
+
+`search_knowledge` 在产品层由现有 `query_knowledge_hub` 覆盖，不作为额外的预留注册项。
+
+#### 3.2.5 Tool 独立性原则
 
 各 Business Tool 必须保持独立执行：
 
@@ -410,7 +534,7 @@ DataIntelligent 对外暴露 Business Tool，而不是直接暴露 MySQL 底层�
 
 `search_knowledge`、`get_data_asset` 和 `query_data` 可以针对同一个用户问题分别执行，但三者之间不存在嵌套调用关系。
 
-#### 3.2.5 返回内容与引用透明设计 (Response & Citation Design)
+#### 3.2.6 返回内容与引用透明设计 (Response & Citation Design)
 
 MCP 协议的 Tool 返回格式支持多种内容类型（`content` 数组），本项目将充分利用这一特性实现"可溯源"的回答：
 
@@ -1281,16 +1405,17 @@ Hybrid Search 命中 Chunk（正文含 "[图片描述: 系统采用三层架构.
 │                                   MCP Server 层 (接口层)                                     │
 │                                                                                             │
 │    ┌─────────────────────────────────────────────────────────────────────────────────┐      │
-│    │                              MCP Protocol Handler                               │      │
-│    │                    (tools/list, tools/call, resources/*)                        │      │
+│    │ ProtocolHandler（MCP SDK 适配：tools/list、tools/call、resources/*）              │      │
 │    └─────────────────────────────────────────────────────────────────────────────────┘      │
-│                                           │                                                 │
-│    ┌──────────────────────┬───────────────┼───────────────┬──────────────────────┐          │
-│    ▼                      ▼               ▼               ▼                      ▼          │
-│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│ │query_knowledge│ │list_collections│ │get_document_ │  │search_by_    │  │  其他扩展    │    │
-│ │    _hub      │  │              │  │   summary    │  │  keyword     │  │   工具...    │    │
-│ └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘    │
+│                                           ▼                                                 │
+│    ┌─────────────────────────────────────────────────────────────────────────────────┐      │
+│    │ ToolRegistry：注册、发现、tools/list 与 exec（校验、上下文、错误、响应）        │      │
+│    └───────────────────────────────────────────────┬─────────────────────────────────┘      │
+│                                                    ▼                                        │
+│    ┌─────────────────────────────────────────────────────────────────────────────────┐      │
+│    │ BaseTool implementations: query_knowledge_hub | list_collections |              │      │
+│    │ get_document_summary；规划 Tool 仅保留 ToolPlan，不注册                          │      │
+│    └─────────────────────────────────────────────────────────────────────────────────┘      │
 └────────────────────────────────────────┬────────────────────────────────────────────────────┘
                                          │
                                          ▼
@@ -1422,9 +1547,11 @@ smart-knowledge-hub/
 │   ├── mcp_server/                      # MCP Server 层 (接口层)
 │   │   ├── __init__.py
 │   │   ├── server.py                    # MCP Server 入口 (Stdio Transport)
-│   │   ├── protocol_handler.py          # JSON-RPC 协议处理
-│   │   └── tools/                       # MCP Tools 定义
+│   │   ├── protocol_handler.py          # MCP SDK 协议适配：委托 ToolRegistry
+│   │   └── tool/                        # MCP Tool 统一目录
 │   │       ├── __init__.py
+│   │       ├── base.py                  # BaseTool、ToolContext、ToolResult 统一契约
+│   │       ├── tool_registry.py         # 注册、发现、tools/list 与 exec 唯一执行入口
 │   │       ├── query_knowledge_hub.py   # 主检索工具
 │   │       ├── list_collections.py      # 列出集合工具
 │   │       └── get_document_summary.py  # 文档摘要工具
@@ -1632,8 +1759,10 @@ smart-knowledge-hub/
 | 模块 | 职责 | 关键技术点 |
 |-----|-----|----------|
 | `server.py` | MCP Server 主入口，处理 Stdio Transport 通信 | Python MCP SDK，JSON-RPC 2.0 |
-| `protocol_handler.py` | 协议解析与能力协商 | `initialize`、`tools/list`、`tools/call` |
-| `tools/*` | 对外暴露的工具函数实现 | 装饰器定义，参数校验，响应格式化 |
+| `protocol_handler.py` | MCP SDK 协议适配与能力协商 | `tools/list` 委托 Registry，`tools/call` 委托 `Registry.exec` |
+| `tool/base.py` | 所有 MCP Tool 的统一抽象契约 | 元数据、`ToolContext`、`ToolResult`、`execute(arguments, context)` |
+| `tool/tool_registry.py` | 已实现 Tool 的唯一目录与唯一执行入口 | `register/get/list/list_mcp_tools/exec`、异常和 MCP 响应归一化 |
+| `tool/<tool>.py` | `BaseTool` 的具体业务实现 | 仅业务编排与领域错误，不含 SDK 注册代码 |
 
 #### 5.3.2 Core 层
 
@@ -2073,14 +2202,15 @@ dashboard:
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
 | J1 | 产品定位与架构模型调整 | [~] | - | V0.2 设计更新中 |
-| J2 | Knowledge Engine 重构与知识检索能力定义 | [ ] | - | 待设计 |
-| J3 | MySQL DataSource 建设 | [ ] | - | 接入方式待选型与讨论 |
-| J4 | 数据资产探索能力建设 | [ ] | - | 待设计 |
-| J5 | 自然语言数据查询能力建设 | [ ] | - | 待设计 |
-| J6 | 数据分析与查询解释能力预留 | [ ] | - | 待设计 |
-| J7 | Business Tool 的 Schema 定义与 MCP 注册 | [ ] | - | Tool 设计完成后实施 |
-| J8 | Claude / Codex MCP Client 兼容性验证 | [ ] | - | 待实施 |
-| J9 | 数据智能核心场景 E2E 验收 | [ ] | - | 待实施 |
+| J2 | MCP Tool 基础架构重构 | [ ] | - | `tool/base.py` + `tool/tool_registry.py`；将现有 3 个 Tool 纳入统一注册与 `exec` 执行边界 |
+| J3 | 现有 Tool 迁移与回归验证 | [ ] | - | 保持 `query_knowledge_hub`、`list_collections`、`get_document_summary` 的 MCP 名称与行为兼容 |
+| J4 | Knowledge Engine 重构与知识检索能力定义 | [ ] | - | `query_knowledge_hub` 与 `search_knowledge` 的兼容/迁移策略待单独设计 |
+| J5 | MySQL DataSource 建设 | [ ] | - | 接入方式待选型与讨论 |
+| J6 | 数据资产探索能力建设 | [ ] | - | 对应预留 Tool，待数据源和 Schema 设计完成后注册 |
+| J7 | 自然语言数据查询能力建设 | [ ] | - | 对应预留 Tool，待安全边界和执行模型设计完成后注册 |
+| J8 | 数据分析与查询解释能力预留 | [~] | - | 已以 `ToolPlan` 字段预留；不注册、不暴露 |
+| J9 | Claude / Codex MCP Client 兼容性验证 | [ ] | - | 待实施 |
+| J10 | 数据智能核心场景 E2E 验收 | [ ] | - | 待实施 |
 
 ---
 
@@ -2841,10 +2971,10 @@ dashboard:
 - **测试方法**：`pytest -q tests/unit/test_protocol_handler.py`。
 
 ### E3：实现 tool：query_knowledge_hub
-- **目标**：实现 `tools/query_knowledge_hub.py`：调用 HybridSearch + Reranker，构建带引用的响应，返回 Markdown + structured citations。
+- **目标**：实现 `tool/query_knowledge_hub.py`：调用 HybridSearch + Reranker，构建带引用的响应，返回 Markdown + structured citations。
 - **前置依赖**：D5（HybridSearch）、D6（Reranker）、E1（Server）、E2（Protocol Handler）
 - **修改文件**：
-  - `src/mcp_server/tools/query_knowledge_hub.py`
+  - `src/mcp_server/tool/query_knowledge_hub.py`
   - `src/core/response/response_builder.py`（新增：构建 MCP 响应格式）
   - `src/core/response/citation_generator.py`（新增：生成引用信息）
   - `tests/unit/test_response_builder.py`（新增）
@@ -2860,17 +2990,17 @@ dashboard:
 - **测试方法**：`pytest -q tests/integration/test_mcp_server.py -k query_knowledge_hub`。
 
 ### E4：实现 tool：list_collections
-- **目标**：实现 `tools/list_collections.py`：列出 `data/documents/` 下集合并附带统计（可延后到下一步）。
+- **目标**：实现 `tool/list_collections.py`：列出 `data/documents/` 下集合并附带统计（可延后到下一步）。
 - **修改文件**：
-  - `src/mcp_server/tools/list_collections.py`
+  - `src/mcp_server/tool/list_collections.py`
   - `tests/unit/test_list_collections.py`
 - **验收标准**：对 fixtures 中的目录结构能返回集合名列表。
 - **测试方法**：`pytest -q tests/unit/test_list_collections.py`。
 
 ### E5：实现 tool：get_document_summary
-- **目标**：实现 `tools/get_document_summary.py`：按 doc_id 返回 title/summary/tags（可先从 metadata/缓存取）。
+- **目标**：实现 `tool/get_document_summary.py`：按 doc_id 返回 title/summary/tags（可先从 metadata/缓存取）。
 - **修改文件**：
-  - `src/mcp_server/tools/get_document_summary.py`
+  - `src/mcp_server/tool/get_document_summary.py`
   - `tests/unit/test_get_document_summary.py`
 - **验收标准**：对不存在 doc_id 返回规范错误；存在时返回结构化信息。
 - **测试方法**：`pytest -q tests/unit/test_get_document_summary.py`。
@@ -3182,21 +3312,24 @@ dashboard:
 
 ### 阶段 J：DataIntelligent 数据智能 MCP Server 升级
 
-**目标：** 将现有 RAG MCP Server 升级为面向数据智能问答场景的 MCP Server。
+**目标：** 将现有 RAG MCP Server 升级为面向数据智能问答场景的 MCP Server；先以统一的 Tool 基础架构承接已有能力，再逐步接入数据智能能力。
 
 > **当前状态：** 本阶段处于设计更新中。MySQL 接入方式与 Business Tool 的具体设计尚未确定；本节不预设其实现方案，也不改变既有 Tool 的兼容策略。
 
-主要工作：
+本轮先完成的架构调整：
 
-- J1：产品定位与架构模型调整
-- J2：Knowledge Engine 重构与 `search_knowledge` 能力定义
-- J3：MySQL DataSource 建设
-- J4：数据资产探索能力建设
-- J5：自然语言数据查询能力建设
-- J6：数据分析与查询解释能力预留
-- J7：6 个 Business Tool 的 Schema 定义与 MCP 注册
-- J8：Claude / Codex MCP Client 兼容性验证
-- J9：数据智能核心场景 E2E 验收
+- 以 `tool/base.py` 的 `BaseTool` 收敛现有 `query_knowledge_hub`、`list_collections`、`get_document_summary`；
+- 以 `tool/tool_registry.py` 的 `ToolRegistry` 作为已实现 MCP Tool 的唯一发现、注册和 `exec` 执行来源；
+- 在 `ToolRegistry.exec()` 收敛参数校验、执行上下文、异常、响应转换和 trace；
+- 将 `ProtocolHandler` 收敛为 MCP SDK 适配层，不再维护独立 handler 字典；
+- 为未实现的 Business Tool 维护不注册的 `ToolPlan` 预留字段。
+
+后续工作（不属于本轮实现承诺）：
+
+- Knowledge Engine 与 `search_knowledge` 的正式命名/兼容策略；
+- MySQL DataSource、数据资产探索和自然语言数据查询；
+- `analyze_data`、`explain_query` 的 Schema、权限与执行模型；
+- Claude / Codex MCP Client 兼容性验证和数据智能核心场景 E2E 验收。
 
 ### 交付里程碑（建议）
 
@@ -3253,4 +3386,3 @@ DataIntelligent 作为 MCP Server，可以持续适配更多 MCP Client。
 当基础 Business Tool 足够稳定后，可以进一步探索复杂数据任务的多 Tool 协同和 Agentic Workflow。
 
 该阶段重点解决复杂问题的任务分解、Tool 组合和多轮数据分析问题。
-

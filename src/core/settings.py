@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import yaml
 
@@ -18,7 +18,7 @@ REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 DEFAULT_SETTINGS_PATH: Path = REPO_ROOT / "config" / "settings.yaml"
 
 
-def resolve_path(relative: Union[str, Path]) -> Path:
+def resolve_path(relative: str | Path) -> Path:
     """Resolve a repo-relative path to an absolute path.
 
     If *relative* is already absolute it is returned as-is.  Otherwise
@@ -37,7 +37,7 @@ class SettingsError(ValueError):
     """Raised when settings validation fails."""
 
 
-def _require_mapping(data: Dict[str, Any], key: str, path: str) -> Dict[str, Any]:
+def _require_mapping(data: dict[str, Any], key: str, path: str) -> dict[str, Any]:
     value = data.get(key)
     if value is None:
         raise SettingsError(f"Missing required field: {path}.{key}")
@@ -46,41 +46,41 @@ def _require_mapping(data: Dict[str, Any], key: str, path: str) -> Dict[str, Any
     return value
 
 
-def _require_value(data: Dict[str, Any], key: str, path: str) -> Any:
+def _require_value(data: dict[str, Any], key: str, path: str) -> Any:
     if key not in data or data.get(key) is None:
         raise SettingsError(f"Missing required field: {path}.{key}")
     return data[key]
 
 
-def _require_str(data: Dict[str, Any], key: str, path: str) -> str:
+def _require_str(data: dict[str, Any], key: str, path: str) -> str:
     value = _require_value(data, key, path)
     if not isinstance(value, str) or not value.strip():
         raise SettingsError(f"Expected non-empty string for field: {path}.{key}")
     return value
 
 
-def _require_int(data: Dict[str, Any], key: str, path: str) -> int:
+def _require_int(data: dict[str, Any], key: str, path: str) -> int:
     value = _require_value(data, key, path)
     if not isinstance(value, int):
         raise SettingsError(f"Expected integer for field: {path}.{key}")
     return value
 
 
-def _require_number(data: Dict[str, Any], key: str, path: str) -> float:
+def _require_number(data: dict[str, Any], key: str, path: str) -> float:
     value = _require_value(data, key, path)
     if not isinstance(value, (int, float)):
         raise SettingsError(f"Expected number for field: {path}.{key}")
     return float(value)
 
 
-def _require_bool(data: Dict[str, Any], key: str, path: str) -> bool:
+def _require_bool(data: dict[str, Any], key: str, path: str) -> bool:
     value = _require_value(data, key, path)
     if not isinstance(value, bool):
         raise SettingsError(f"Expected boolean for field: {path}.{key}")
     return value
 
 
-def _require_list(data: Dict[str, Any], key: str, path: str) -> List[Any]:
+def _require_list(data: dict[str, Any], key: str, path: str) -> list[Any]:
     value = _require_value(data, key, path)
     if not isinstance(value, list):
         raise SettingsError(f"Expected list for field: {path}.{key}")
@@ -94,12 +94,12 @@ class LLMSettings:
     temperature: float
     max_tokens: int
     # Azure/OpenAI-specific optional fields
-    api_key: Optional[str] = None
-    api_version: Optional[str] = None
-    azure_endpoint: Optional[str] = None
-    deployment_name: Optional[str] = None
+    api_key: str | None = None
+    api_version: str | None = None
+    azure_endpoint: str | None = None
+    deployment_name: str | None = None
     # Ollama-specific optional fields
-    base_url: Optional[str] = None
+    base_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,12 +108,12 @@ class EmbeddingSettings:
     model: str
     dimensions: int
     # Azure-specific optional fields
-    api_key: Optional[str] = None
-    api_version: Optional[str] = None
-    azure_endpoint: Optional[str] = None
-    deployment_name: Optional[str] = None
+    api_key: str | None = None
+    api_version: str | None = None
+    azure_endpoint: str | None = None
+    deployment_name: str | None = None
     # Ollama-specific optional fields
-    base_url: Optional[str] = None
+    base_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -143,7 +143,7 @@ class RerankSettings:
 class EvaluationSettings:
     enabled: bool
     provider: str
-    metrics: List[str]
+    metrics: list[str]
 
 
 @dataclass(frozen=True)
@@ -160,11 +160,11 @@ class VisionLLMSettings:
     provider: str
     model: str
     max_image_size: int
-    api_key: Optional[str] = None
-    api_version: Optional[str] = None
-    azure_endpoint: Optional[str] = None
-    deployment_name: Optional[str] = None
-    base_url: Optional[str] = None
+    api_key: str | None = None
+    api_version: str | None = None
+    azure_endpoint: str | None = None
+    deployment_name: str | None = None
+    base_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -173,8 +173,8 @@ class IngestionSettings:
     chunk_overlap: int
     splitter: str
     batch_size: int
-    chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
-    metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
+    chunk_refiner: dict[str, Any] | None = None  # 动态配置
+    metadata_enricher: dict[str, Any] | None = None  # 动态配置
 
 
 @dataclass(frozen=True)
@@ -186,11 +186,11 @@ class Settings:
     rerank: RerankSettings
     evaluation: EvaluationSettings
     observability: ObservabilitySettings
-    ingestion: Optional[IngestionSettings] = None
-    vision_llm: Optional[VisionLLMSettings] = None
+    ingestion: IngestionSettings | None = None
+    vision_llm: VisionLLMSettings | None = None
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Settings":
+    def from_dict(cls, data: dict[str, Any]) -> Settings:
         if not isinstance(data, dict):
             raise SettingsError("Settings root must be a mapping")
 
