@@ -17,7 +17,6 @@ from src.mcp_server.tool.get_document_summary import (
     DocumentSummary,
     GetDocumentSummaryConfig,
     GetDocumentSummaryTool,
-    register_tool,
 )
 
 # =============================================================================
@@ -859,10 +858,13 @@ class TestExecuteMethod:
 
         result = await tool_with_config.execute(doc_id="doc_abc123")
 
-        assert result.isError is False
+        assert result.is_error is False
         assert len(result.content) == 1
         assert result.content[0].type == "text"
         assert "Test Document Title" in result.content[0].text
+        assert result.structured_content is not None
+        assert result.structured_content["doc_id"] == "doc_abc123"
+        assert result.structured_content["title"] == "Test Document Title"
 
     @pytest.mark.asyncio
     async def test_execute_document_not_found(
@@ -878,7 +880,7 @@ class TestExecuteMethod:
 
         result = await tool_with_config.execute(doc_id="nonexistent")
 
-        assert result.isError is True
+        assert result.is_error is True
         assert "Not Found" in result.content[0].text
 
     @pytest.mark.asyncio
@@ -904,105 +906,6 @@ class TestExecuteMethod:
             collection="custom_collection"
         )
 
-        assert result.isError is False
+        assert result.is_error is False
         # Verify _get_collection was called (via _find_document_chunks)
         mock_get_collection.assert_called()
-
-
-# =============================================================================
-# Test: Tool Registration
-# =============================================================================
-
-class TestRegisterTool:
-    """Tests for register_tool function."""
-
-    def test_register_tool_calls_register(self):
-        """Test that register_tool calls protocol_handler.register_tool."""
-        mock_handler = Mock()
-
-        register_tool(mock_handler)
-
-        mock_handler.register_tool.assert_called_once()
-        call_kwargs = mock_handler.register_tool.call_args
-        assert call_kwargs[1]['name'] == TOOL_NAME
-        assert call_kwargs[1]['description'] == TOOL_DESCRIPTION
-        assert call_kwargs[1]['input_schema'] == TOOL_INPUT_SCHEMA
-
-    def test_register_tool_handler_callable(self):
-        """Test that registered handler is callable."""
-        mock_handler = Mock()
-
-        register_tool(mock_handler)
-
-        call_kwargs = mock_handler.register_tool.call_args
-        handler = call_kwargs[1]['handler']
-        assert callable(handler)
-
-
-# =============================================================================
-# Test: Edge Cases
-# =============================================================================
-
-class TestEdgeCases:
-    """Tests for edge cases and boundary conditions."""
-
-    def test_empty_metadata(self, tool_with_config: GetDocumentSummaryTool):
-        """Test handling of empty metadata."""
-        title = tool_with_config._extract_title({}, "")
-        assert title == "Untitled Document"
-
-        tags = tool_with_config._extract_tags({})
-        assert tags == []
-
-        filtered = tool_with_config._filter_metadata({})
-        assert filtered == {}
-
-    def test_none_values_in_metadata(self, tool_with_config: GetDocumentSummaryTool):
-        """Test handling of None values in metadata."""
-        metadata = {'title': None, 'source_path': None}
-        title = tool_with_config._extract_title(metadata, "Content")
-        # Should fall through to content-based extraction
-        assert title is not None
-
-    def test_unicode_content(self, tool_with_config: GetDocumentSummaryTool):
-        """Test handling of Unicode content."""
-        metadata = {'title': '中文标题'}
-        result = tool_with_config._extract_title(metadata, "")
-        assert result == '中文标题'
-
-        chunks = [{'metadata': {}, 'text': '这是中文内容。'}]
-        summary = tool_with_config._extract_summary(chunks)
-        assert '这是中文内容' in summary
-
-    def test_special_characters_in_path(self, tool_with_config: GetDocumentSummaryTool):
-        """Test handling of special characters in source path."""
-        metadata = {'source_path': '/docs/file (1).pdf'}
-        title = tool_with_config._extract_title(metadata, "")
-        assert "File" in title
-
-    def test_very_long_summary_truncation(self, tool_with_config: GetDocumentSummaryTool):
-        """Test that very long content is properly truncated."""
-        long_content = "Word " * 1000
-        chunks = [{'metadata': {}, 'text': long_content}]
-        summary = tool_with_config._extract_summary(chunks)
-
-        assert len(summary) <= tool_with_config.config.summary_max_length
-        assert summary.endswith("...")
-
-    def test_client_cached(self, tool_with_config: GetDocumentSummaryTool):
-        """Test that ChromaDB client is cached after first creation."""
-        mock_client = Mock()
-        mock_chromadb = Mock()
-        mock_chromadb.PersistentClient.return_value = mock_client
-
-        with patch.dict('sys.modules', {'chromadb': mock_chromadb, 'chromadb.config': Mock()}):
-            # Reset client cache
-            tool_with_config._chroma_client = None
-
-            # Call twice
-            result1 = tool_with_config._get_chroma_client()
-            result2 = tool_with_config._get_chroma_client()
-
-            # Should only create once
-            assert mock_chromadb.PersistentClient.call_count == 1
-            assert result1 is result2

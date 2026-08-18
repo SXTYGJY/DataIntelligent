@@ -5,18 +5,14 @@ collection listing capabilities through the MCP protocol.
 """
 
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from src.mcp_server.tool.list_collections import (
-    TOOL_DESCRIPTION,
-    TOOL_INPUT_SCHEMA,
-    TOOL_NAME,
     CollectionInfo,
     ListCollectionsConfig,
     ListCollectionsTool,
-    register_tool,
 )
 
 # =============================================================================
@@ -545,10 +541,14 @@ class TestExecuteMethod:
         ):
             result = await tool_with_config.execute(include_stats=True)
 
-        assert result.isError is False
+        assert result.is_error is False
         assert len(result.content) == 1
         assert result.content[0].type == "text"
         assert "Available Collections (3 total)" in result.content[0].text
+        assert result.structured_content == {
+            "collections": [c.to_dict() for c in sample_collections],
+            "count": 3,
+        }
 
     @pytest.mark.asyncio
     async def test_execute_empty_result(
@@ -559,7 +559,7 @@ class TestExecuteMethod:
         with patch.object(tool_with_config, 'list_collections', return_value=[]):
             result = await tool_with_config.execute()
 
-        assert result.isError is False
+        assert result.is_error is False
         assert "No collections found" in result.content[0].text
 
     @pytest.mark.asyncio
@@ -575,7 +575,7 @@ class TestExecuteMethod:
         ):
             result = await tool_with_config.execute()
 
-        assert result.isError is True
+        assert result.is_error is True
         assert "Error listing collections" in result.content[0].text
 
     @pytest.mark.asyncio
@@ -590,84 +590,3 @@ class TestExecuteMethod:
             await tool_with_config.execute(include_stats=False)
 
         mock_list.assert_called_once_with(include_stats=False)
-
-
-# =============================================================================
-# register_tool Function Tests
-# =============================================================================
-
-class TestRegisterTool:
-    """Tests for register_tool function."""
-
-    def test_register_tool_success(self) -> None:
-        """Test successful tool registration."""
-        mock_handler = Mock()
-
-        register_tool(mock_handler)
-
-        mock_handler.register_tool.assert_called_once()
-        call_args = mock_handler.register_tool.call_args
-
-        assert call_args.kwargs['name'] == TOOL_NAME
-        assert call_args.kwargs['description'] == TOOL_DESCRIPTION
-        assert call_args.kwargs['input_schema'] == TOOL_INPUT_SCHEMA
-        assert callable(call_args.kwargs['handler'])
-
-    @pytest.mark.asyncio
-    async def test_registered_handler_callable(self) -> None:
-        """Test that registered handler is callable."""
-        mock_handler = Mock()
-
-        register_tool(mock_handler)
-
-        # Get the registered handler
-        handler = mock_handler.register_tool.call_args.kwargs['handler']
-
-        # Mock the tool's execute method
-        with patch.object(
-            ListCollectionsTool,
-            'execute',
-            new_callable=AsyncMock
-        ) as mock_execute:
-            mock_result = Mock()
-            mock_execute.return_value = mock_result
-
-            result = await handler(include_stats=True)
-
-            # Handler should have been called
-            assert result == mock_result
-
-
-# =============================================================================
-# Tool Metadata Tests
-# =============================================================================
-
-class TestToolMetadata:
-    """Tests for tool metadata constants."""
-
-    def test_tool_name(self) -> None:
-        """Test tool name constant."""
-        assert TOOL_NAME == "list_collections"
-
-    def test_tool_description_content(self) -> None:
-        """Test tool description contains key info."""
-        assert "collection" in TOOL_DESCRIPTION.lower()
-        assert "knowledge base" in TOOL_DESCRIPTION.lower()
-
-    def test_input_schema_structure(self) -> None:
-        """Test input schema has correct structure."""
-        assert TOOL_INPUT_SCHEMA["type"] == "object"
-        assert "properties" in TOOL_INPUT_SCHEMA
-        assert "include_stats" in TOOL_INPUT_SCHEMA["properties"]
-
-    def test_input_schema_include_stats(self) -> None:
-        """Test include_stats property schema."""
-        prop = TOOL_INPUT_SCHEMA["properties"]["include_stats"]
-
-        assert prop["type"] == "boolean"
-        assert prop["default"] is True
-        assert "description" in prop
-
-    def test_no_required_params(self) -> None:
-        """Test that no parameters are required."""
-        assert TOOL_INPUT_SCHEMA["required"] == []

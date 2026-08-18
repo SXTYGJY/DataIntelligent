@@ -201,6 +201,81 @@ def test_mcp_server_tools_list_stdio() -> None:
     assert "list_collections" in tool_names
 
 
+@pytest.mark.integration
+def test_mcp_server_prompts_stdio() -> None:
+    """prompts/list lists every tool and prompts/get returns its prompt body."""
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "src.mcp_server.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    requests = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "clientInfo": {"name": "pytest", "version": "0.0.0"},
+                "capabilities": {},
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "prompts/list",
+            "params": {},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "prompts/get",
+            "params": {"name": "query_knowledge_hub"},
+        },
+    ]
+
+    try:
+        lines = send_and_receive(proc, requests, timeout=10.0)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+    init_response = find_response(lines, 1)
+    assert init_response is not None, f"No initialize response found in: {lines}"
+    assert "capabilities" in init_response["result"]
+    assert init_response["result"]["capabilities"].get("prompts") is not None
+
+    prompts_response = find_response(lines, 2)
+    assert prompts_response is not None, f"No prompts/list response found in: {lines}"
+    assert "result" in prompts_response
+    prompt_names = {p["name"] for p in prompts_response["result"]["prompts"]}
+    assert prompt_names == {
+        "query_knowledge_hub",
+        "list_collections",
+        "get_document_summary",
+    }
+
+    get_response = find_response(lines, 3)
+    assert get_response is not None, f"No prompts/get response found in: {lines}"
+    assert "result" in get_response
+    messages = get_response["result"]["messages"]
+    assert len(messages) >= 1
+    assert messages[0]["role"] == "user"
+    assert len(messages[0]["content"]["text"]) > 0
+
+
 # =============================================================================
 # Multimodal Response Tests (E6)
 # =============================================================================

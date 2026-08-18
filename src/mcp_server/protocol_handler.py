@@ -1,9 +1,21 @@
-"""MCP SDK adapter backed by the shared :class:`ToolRegistry`."""
+"""MCP SDK adapter backed by the shared :class:`ToolRegistry`.
+
+Per `docs/design/tool_manager_design.md` §5, this class is a pure MCP SDK
+adaptation layer: it holds no second tool dict, imports no concrete tool
+classes, and only delegates to the registry.
+
+| MCP protocol  | Delegation                                    |
+|---------------|-----------------------------------------------|
+| ``tools/list``   | ``registry.list_mcp_tools()``                 |
+| ``tools/call``   | ``await registry.exec(name, arguments)``      |
+| ``prompts/list`` | ``registry.list_prompt()`` → MCP ``Prompt``   |
+| ``prompts/get``  | ``registry.get_prompt(name)`` → system message|
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from mcp import types
 from mcp.server.lowlevel import Server
@@ -33,6 +45,8 @@ class ProtocolHandler:
     def __post_init__(self) -> None:
         self._logger = get_logger(log_level="INFO")
 
+    # ── tools ──────────────────────────────────────────────────────────
+
     def get_tool_schemas(self) -> list[types.Tool]:
         """Delegate MCP ``tools/list`` to the single registry."""
         return self.registry.list_mcp_tools()
@@ -43,9 +57,49 @@ class ProtocolHandler:
         """Delegate MCP ``tools/call`` to the single registry."""
         return await self.registry.exec(name, arguments, ToolContext())
 
+    # ── prompts ────────────────────────────────────────────────────────
+
+    def list_prompts(self) -> list[types.Prompt]:
+        """Delegate MCP ``prompts/list`` to the single registry.
+
+        Returns a MCP ``Prompt`` for every registered tool (including tools
+        that have not configured a ``prompt`` body yet).
+        """
+        return [
+            types.Prompt(name=info.name, description=info.description or "")
+            for info in self.registry.list_prompt()
+        ]
+
+    def get_prompt(self, name: str) -> types.GetPromptResult:
+        """Delegate MCP ``prompts/get`` to the single registry.
+
+        The tool prompt text is returned as a **user** message so the MCP
+        host can feed it into the model context. (The MCP SDK 1.x
+        ``PromptMessage.role`` only accepts ``user``/``assistant``; the
+        design intent of a "system-style" instruction is preserved.)
+
+        Args:
+            name: Tool/prompt name.
+
+        Raises:
+            ValueError: If the prompt (or its ``prompt`` body) is not found.
+        """
+        info = self.registry.get_prompt(name)
+        if info is None or not info.prompt:
+            raise ValueError(f"Prompt '{name}' not found")
+        return types.GetPromptResult(
+            description=info.description,
+            messages=[
+                types.PromptMessage(
+                    role="user",
+                    content=types.TextContent(type="text", text=info.prompt),
+                )
+            ],
+        )
+
     def get_capabilities(self) -> dict[str, Any]:
         """Return MCP capabilities declared by this server."""
-        return {"tools": {}}
+        return {"tools": {}, "prompts": {}}
 
 
 def create_mcp_server(
@@ -75,10 +129,22 @@ def create_mcp_server(
     ) -> types.CallToolResult:
         return await protocol_handler.execute_tool(name, arguments)
 
+    @server.list_prompts()
+    async def handle_list_prompts() -> list[types.Prompt]:
+        return protocol_handler.list_prompts()
+
+    @server.get_prompt()
+    async def handle_get_prompt(
+        name: str, arguments: dict[str, str] | None
+    ) -> types.GetPromptResult:
+        del arguments  # tool prompts are static; no parameterized arguments yet
+        return protocol_handler.get_prompt(name)
+
     server._protocol_handler = protocol_handler  # type: ignore[attr-defined]
     return server
 
 
 def get_protocol_handler(server: Server) -> ProtocolHandler:
     """Return the ProtocolHandler attached by :func:`create_mcp_server`."""
-    return server._protocol_handler  # type: ignore[attr-defined]
+    # The low-level Server stores the handler on a private attribute.
+    return cast(ProtocolHandler, server._protocol_handler)  # type: ignore[attr-defined]

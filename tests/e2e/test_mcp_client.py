@@ -189,6 +189,7 @@ class TestMCPClientE2E:
         assert "serverInfo" in init_resp["result"]
         assert "capabilities" in init_resp["result"]
         assert init_resp["result"]["capabilities"].get("tools") is not None
+        assert init_resp["result"]["capabilities"].get("prompts") is not None
 
         # -- tools/list ------------------------------------------------
         tools_resp = _find(responses, 2)
@@ -210,6 +211,55 @@ class TestMCPClientE2E:
             schema = tool["inputSchema"]
             assert schema.get("type") == "object"
             assert "properties" in schema
+
+    # ------------------------------------------------------------------
+    # 2. prompts/list + prompts/get (protocol round-trip)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.e2e
+    def test_prompts_list_and_get(self, mcp_server: subprocess.Popen) -> None:
+        """prompts/list lists every tool and prompts/get returns its prompt body."""
+        messages = [
+            INIT_REQUEST,
+            INITIALIZED_NOTIFICATION,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "prompts/list",
+                "params": {},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "prompts/get",
+                "params": {"name": "query_knowledge_hub"},
+            },
+        ]
+
+        responses = _send_jsonrpc(mcp_server, messages, expected_responses=3, timeout=15.0)
+
+        list_resp = _find(responses, 2)
+        assert list_resp is not None, f"Missing prompts/list response. Got: {responses}"
+        assert "result" in list_resp
+        prompt_names = {p["name"] for p in list_resp["result"]["prompts"]}
+        assert prompt_names == {
+            "query_knowledge_hub",
+            "list_collections",
+            "get_document_summary",
+        }
+
+        get_resp = _find(responses, 3)
+        assert get_resp is not None, f"Missing prompts/get response. Got: {responses}"
+        assert "result" in get_resp
+        result = get_resp["result"]
+        assert "messages" in result
+        assert len(result["messages"]) >= 1
+        message = result["messages"][0]
+        # MCP SDK 1.x PromptMessage only accepts user/assistant roles; the
+        # prompt text is delivered as a user message per the design intent.
+        assert message["role"] == "user"
+        assert message["content"]["type"] == "text"
+        assert len(message["content"]["text"]) > 0
 
     # ------------------------------------------------------------------
     # 2. tools/call – query_knowledge_hub (protocol round-trip)

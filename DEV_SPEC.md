@@ -2201,9 +2201,9 @@ dashboard:
 
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
-| J1 | 产品定位与架构模型调整 | [~] | - | V0.2 设计更新中 |
-| J2 | MCP Tool 基础架构重构 | [ ] | - | `tool/base.py` + `tool/tool_registry.py`；将现有 3 个 Tool 纳入统一注册与 `exec` 执行边界 |
-| J3 | 现有 Tool 迁移与回归验证 | [ ] | - | 保持 `query_knowledge_hub`、`list_collections`、`get_document_summary` 的 MCP 名称与行为兼容 |
+| J1 | 产品定位与架构模型调整 | [x] | 2026-08-18 | 《架构定位与设计基线》定稿：MCP Server 定位、三域模型、十条原则 |
+| J2 | MCP Tool 基础架构重构 | [x] | 2026-08-19 | 实现 `docs/design/tool_manager_design.md`：`BaseTool` 描述符 + `ToolMetadata` + `tool_manager.py`（`ToolRegistry`+内部 executor）+ `PromptInfo`；删除 `tool_registry.py` / `CallbackTool` |
+| J3 | 现有 Tool 迁移与回归验证 | [x] | 2026-08-19 | 3 个 Tool 以描述符 + implementation 注册，`execute` 统一返回 `ToolResult`；`query_knowledge_hub` citations 走 `structuredContent`；prompts/list + prompts/get 线级回归通过 |
 | J4 | Knowledge Engine 重构与知识检索能力定义 | [ ] | - | `query_knowledge_hub` 与 `search_knowledge` 的兼容/迁移策略待单独设计 |
 | J5 | MySQL DataSource 建设 | [ ] | - | 接入方式待选型与讨论 |
 | J6 | 数据资产探索能力建设 | [ ] | - | 对应预留 Tool，待数据源和 Schema 设计完成后注册 |
@@ -2227,8 +2227,8 @@ dashboard:
 | 阶段 G | 6 | 6 | 100% |
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
-| 阶段 J | 9 | 0 | 0% |
-| **总计** | **77** | **68** | **88%** |
+| 阶段 J | 9 | 3 | 33% |
+| **总计** | **77** | **71** | **92%** |
 
 
 ---
@@ -3316,13 +3316,18 @@ dashboard:
 
 > **当前状态：** 本阶段处于设计更新中。MySQL 接入方式与 Business Tool 的具体设计尚未确定；本节不预设其实现方案，也不改变既有 Tool 的兼容策略。
 
-本轮先完成的架构调整：
+本轮先完成的架构调整（设计定稿见 `docs/design/tool_manager_design.md`）：
 
-- 以 `tool/base.py` 的 `BaseTool` 收敛现有 `query_knowledge_hub`、`list_collections`、`get_document_summary`；
-- 以 `tool/tool_registry.py` 的 `ToolRegistry` 作为已实现 MCP Tool 的唯一发现、注册和 `exec` 执行来源；
-- 在 `ToolRegistry.exec()` 收敛参数校验、执行上下文、异常、响应转换和 trace；
-- 将 `ProtocolHandler` 收敛为 MCP SDK 适配层，不再维护独立 handler 字典；
+- `BaseTool` 收敛为声明式工具描述符（`name`/`input_schema`/`show_name`/`description`/`prompt`/`metadata`，不含 type/url/method），并引入独立 `ToolMetadata` 治理组件（`user_id`/`access_level`/`class_major`/`class_major_desc`）与 `PromptInfo`（name/description/prompt）；
+- 以 `tool_manager.py` 单文件中的 `ToolRegistry` 作为已实现 MCP Tool 的唯一注册、发现（`list_tools`）、prompt（`list_prompt`/`get_prompt`）与 `exec` 执行来源；executor 为 `exec` 的内部实现模块，不独立公开；
+- `ToolRegistry.exec()` 保持唯一执行入口，收敛参数校验、执行上下文、异常与响应转换；不引入独立公开 ToolExecutor；
+- 对外暴露工具 prompt：`list_prompt`/`get_prompt` 映射 MCP `prompts/list`/`prompts/get`（`prompts/list` 返回全部工具、`prompts/get` 以 user 消息返回 prompt 文本——MCP SDK 1.x 的 `PromptMessage.role` 仅允许 user/assistant，设计稿中的 system 消息意图以 user 消息实现）；
+- `ProtocolHandler` 收敛为 MCP SDK 适配层，仅委托 Registry（`tools/list`/`tools/call`/`prompts/list`/`prompts/get`）；
 - 为未实现的 Business Tool 维护不注册的 `ToolPlan` 预留字段。
+
+实施排期：T0 设计定稿 → T1 `tool_manager` 基建 → T2 现有 3 工具迁移 → T3 ProtocolHandler prompts 映射 → T4 测试回归 → T5 文档收口，合计约 6.5 人日（详见设计文档 §9）。
+
+> **实施状态（2026-08-19）：** T1–T4 已完成并回归通过（单元 1202 通过 / MCP 集成 3 通过 / E2E 8 通过，含 prompts 线级用例；ruff 全绿）。遗留：`get_document_summary.py` / `query_knowledge_hub.py` 中 3 处既有 mypy 类型问题（非本轮引入），以及 numpy stub 与 mypy `python_version=3.11` 的环境兼容问题。
 
 后续工作（不属于本轮实现承诺）：
 

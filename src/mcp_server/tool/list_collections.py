@@ -19,10 +19,10 @@ from typing import TYPE_CHECKING, Any
 from mcp import types
 
 from src.core.settings import resolve_path
+from src.mcp_server.tool.base import ToolResult
 
 if TYPE_CHECKING:
     from src.core.settings import Settings
-    from src.mcp_server.protocol_handler import ProtocolHandler
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,18 @@ TOOL_INPUT_SCHEMA: dict[str, Any] = {
     },
     "required": [],
 }
+
+
+# Prompt exposed via MCP prompts/list + prompts/get (placeholder wording)
+TOOL_PROMPT = """Discover the collections available in the knowledge hub.
+
+Call this tool with no arguments, or with:
+- include_stats: whether to include the document/chunk count per collection
+  (optional, default true)
+
+Use the returned list to pick a collection name before querying
+query_knowledge_hub or fetching a document summary.
+"""
 
 
 @dataclass
@@ -274,14 +286,15 @@ class ListCollectionsTool:
     async def execute(
         self,
         include_stats: bool = True,
-    ) -> types.CallToolResult:
+    ) -> ToolResult:
         """Execute the list_collections tool.
 
         Args:
             include_stats: Whether to include statistics for each collection.
 
         Returns:
-            CallToolResult with formatted collection list.
+            ToolResult with a formatted collection list and structured
+            ``collections`` data in ``structured_content``.
         """
         logger.info(f"Executing list_collections (include_stats={include_stats})")
 
@@ -293,51 +306,27 @@ class ListCollectionsTool:
             )
             response_text = self.format_response(collections)
 
-            return types.CallToolResult(
+            return ToolResult(
                 content=[
                     types.TextContent(
                         type="text",
                         text=response_text,
                     )
                 ],
-                isError=False,
+                structured_content={
+                    "collections": [coll.to_dict() for coll in collections],
+                    "count": len(collections),
+                },
             )
 
         except Exception as e:
             logger.exception("Error executing list_collections")
-            return types.CallToolResult(
+            return ToolResult(
                 content=[
                     types.TextContent(
                         type="text",
                         text=f"Error listing collections: {str(e)}",
                     )
                 ],
-                isError=True,
+                is_error=True,
             )
-
-
-def register_tool(protocol_handler: ProtocolHandler) -> None:
-    """Register the list_collections tool with the protocol handler.
-
-    This function is called by _register_default_tools() in protocol_handler.py
-    to register this tool when the MCP server starts.
-
-    Args:
-        protocol_handler: ProtocolHandler instance to register with.
-    """
-    tool = ListCollectionsTool()
-
-    async def handler(
-        include_stats: bool = True,
-    ) -> types.CallToolResult:
-        """Handler function for MCP tool calls."""
-        return await tool.execute(include_stats=include_stats)
-
-    protocol_handler.register_tool(
-        name=TOOL_NAME,
-        description=TOOL_DESCRIPTION,
-        input_schema=TOOL_INPUT_SCHEMA,
-        handler=handler,
-    )
-
-    logger.info(f"Registered MCP tool: {TOOL_NAME}")

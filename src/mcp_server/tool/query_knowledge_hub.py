@@ -19,12 +19,11 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from mcp import types
-
 from src.core.response.response_builder import MCPToolResponse, ResponseBuilder
 from src.core.settings import Settings, load_settings, resolve_path
 from src.core.trace import TraceCollector, TraceContext
 from src.core.types import RetrievalResult
+from src.mcp_server.tool.base import ToolResult
 
 if TYPE_CHECKING:
     from src.core.query_engine.hybrid_search import HybridSearch
@@ -67,6 +66,21 @@ TOOL_INPUT_SCHEMA: dict[str, Any] = {
     },
     "required": ["query"],
 }
+
+# Prompt exposed via MCP prompts/list + prompts/get (placeholder wording)
+TOOL_PROMPT = """You are searching the knowledge hub for relevant documents.
+
+Given a user question, call this tool with:
+- query: the search question or keywords (required)
+- top_k: how many results to return (optional, default 5, max 20)
+- collection: restrict the search to one collection (optional)
+
+The result contains a Markdown answer with citation markers ([1], [2], ...),
+optionally followed by image blocks. When citations are present, prefer the
+structuredContent.citations array for exact source/page/score data and render
+the Markdown text to the user.
+"""
+
 
 
 @dataclass
@@ -221,7 +235,7 @@ class QueryKnowledgeHubTool:
         query: str,
         top_k: int | None = None,
         collection: str | None = None,
-    ) -> MCPToolResponse:
+    ) -> ToolResult:
         """Execute the query_knowledge_hub tool.
 
         Args:
@@ -230,7 +244,8 @@ class QueryKnowledgeHubTool:
             collection: Target collection name.
 
         Returns:
-            MCPToolResponse with formatted content and citations.
+            ToolResult with formatted content, optional image blocks, and
+            citations in ``structured_content``.
 
         Raises:
             ValueError: If query is empty or invalid.
@@ -306,13 +321,15 @@ class QueryKnowledgeHubTool:
             )
 
             TraceCollector().collect(trace)
-            return response
+            return self._to_tool_result(response)
 
         except Exception as e:
             logger.exception(f"query_knowledge_hub failed: {e}")
             TraceCollector().collect(trace)
             # Return error response
-            return self._build_error_response(query, effective_collection, str(e))
+            return self._to_tool_result(
+                self._build_error_response(query, effective_collection, str(e))
+            )
 
     def _perform_search(
         self,
@@ -387,6 +404,24 @@ class QueryKnowledgeHubTool:
         except Exception as e:
             logger.warning(f"Reranking failed, using original order: {e}")
             return results[:top_k]
+    @staticmethod
+    def _to_tool_result(response: MCPToolResponse) -> ToolResult:
+        """Convert a built MCPToolResponse into the unified ToolResult contract.
+
+        The human-readable Markdown (plus optional image blocks) stays in
+        ``content``; citations move to ``structured_content`` so MCP clients
+        can parse them as ``structuredContent`` (design decision D9).
+        """
+        return ToolResult(
+            content=response.to_mcp_content(),
+            structured_content={
+                "citations": [citation.to_dict() for citation in response.citations],
+                "metadata": response.metadata,
+                "isEmpty": response.is_empty,
+            },
+            is_error=response.is_empty and "error" in response.metadata,
+        )
+
 
     def _build_error_response(
         self,
@@ -425,12 +460,12 @@ class QueryKnowledgeHubTool:
         )
 
 
-# Module-level tool instance (lazy-initialized)
+# Module-level tool instance (lazy-initialized; heavy deps load on first use)
 _tool_instance: QueryKnowledgeHubTool | None = None
 
 
 def get_tool_instance(settings: Settings | None = None) -> QueryKnowledgeHubTool:
-    """Get or create the tool instance.
+    """Get or create the module-level :class:`QueryKnowledgeHubTool` instance.
 
     Args:
         settings: Optional settings to use for initialization.
@@ -442,81 +477,3 @@ def get_tool_instance(settings: Settings | None = None) -> QueryKnowledgeHubTool
     if _tool_instance is None:
         _tool_instance = QueryKnowledgeHubTool(settings=settings)
     return _tool_instance
-
-
-async def query_knowledge_hub_handler(
-    query: str,
-    top_k: int = 5,
-    collection: str | None = None,
-) -> types.CallToolResult:
-    """Handler function for MCP tool registration.
-
-    This function is registered with the ProtocolHandler and called
-    when the MCP client invokes the query_knowledge_hub tool.
-
-    Supports multimodal responses - if search results contain images,
-    the response will include ImageContent blocks alongside TextContent.
-
-    Args:
-        query: Search query string.
-        top_k: Maximum number of results.
-        collection: Optional collection name.
-
-    Returns:
-        MCP CallToolResult with content blocks (text and optionally images).
-    """
-    tool = get_tool_instance()
-
-    try:
-        response = await tool.execute(
-            query=query,
-            top_k=top_k,
-            collection=collection,
-        )
-
-        # Use to_mcp_content() which handles multimodal (text + images)
-        content_blocks = response.to_mcp_content()
-
-        return types.CallToolResult(
-            content=content_blocks,
-            isError=response.is_empty and "error" in response.metadata,
-        )
-
-    except ValueError as e:
-        # Invalid parameters
-        return types.CallToolResult(
-            content=[
-                types.TextContent(
-                    type="text",
-                    text=f"参数错误: {e}",
-                )
-            ],
-            isError=True,
-        )
-    except Exception as e:
-        # Internal error
-        logger.exception(f"query_knowledge_hub handler error: {e}")
-        return types.CallToolResult(
-            content=[
-                types.TextContent(
-                    type="text",
-                    text="内部错误: 查询处理失败",
-                )
-            ],
-            isError=True,
-        )
-
-
-def register_tool(protocol_handler) -> None:
-    """Register query_knowledge_hub tool with the protocol handler.
-
-    Args:
-        protocol_handler: ProtocolHandler instance to register with.
-    """
-    protocol_handler.register_tool(
-        name=TOOL_NAME,
-        description=TOOL_DESCRIPTION,
-        input_schema=TOOL_INPUT_SCHEMA,
-        handler=query_knowledge_hub_handler,
-    )
-    logger.info(f"Registered MCP tool: {TOOL_NAME}")

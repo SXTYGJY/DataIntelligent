@@ -21,10 +21,10 @@ from typing import TYPE_CHECKING, Any
 from mcp import types
 
 from src.core.settings import resolve_path
+from src.mcp_server.tool.base import ToolResult
 
 if TYPE_CHECKING:
     from src.core.settings import Settings
-    from src.mcp_server.protocol_handler import ProtocolHandler
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,17 @@ TOOL_INPUT_SCHEMA: dict[str, Any] = {
     },
     "required": ["doc_id"],
 }
+
+
+# Prompt exposed via MCP prompts/list + prompts/get (placeholder wording)
+TOOL_PROMPT = """Fetch the summary and metadata of a single knowledge document.
+
+Call this tool with:
+- doc_id: the document id (required; full id or hash portion)
+- collection: which collection to search (optional, defaults to the default collection)
+
+Use this after list_collections to get details about a specific document.
+"""
 
 
 @dataclass
@@ -563,7 +574,7 @@ class GetDocumentSummaryTool:
         self,
         doc_id: str,
         collection: str | None = None,
-    ) -> types.CallToolResult:
+    ) -> ToolResult:
         """Execute the get_document_summary tool.
 
         Args:
@@ -571,7 +582,8 @@ class GetDocumentSummaryTool:
             collection: Optional collection name.
 
         Returns:
-            CallToolResult with formatted document summary or error.
+            ToolResult with a formatted summary and structured document data
+            in ``structured_content``, or a business-error result.
         """
         logger.info(f"Executing get_document_summary (doc_id={doc_id}, collection={collection})")
 
@@ -583,64 +595,36 @@ class GetDocumentSummaryTool:
             )
             response_text = self.format_response(summary)
 
-            return types.CallToolResult(
+            return ToolResult(
                 content=[
                     types.TextContent(
                         type="text",
                         text=response_text,
                     )
                 ],
-                isError=False,
+                structured_content=summary.to_dict(),
             )
 
         except DocumentNotFoundError as e:
             logger.warning(f"Document not found: {e}")
-            return types.CallToolResult(
+            return ToolResult(
                 content=[
                     types.TextContent(
                         type="text",
                         text=self.format_error(e),
                     )
                 ],
-                isError=True,
+                is_error=True,
             )
 
         except Exception as e:
             logger.exception("Error executing get_document_summary")
-            return types.CallToolResult(
+            return ToolResult(
                 content=[
                     types.TextContent(
                         type="text",
                         text=self.format_error(e),
                     )
                 ],
-                isError=True,
+                is_error=True,
             )
-
-
-def register_tool(protocol_handler: ProtocolHandler) -> None:
-    """Register the get_document_summary tool with the protocol handler.
-
-    This function is called by _register_default_tools() in protocol_handler.py
-    to register this tool when the MCP server starts.
-
-    Args:
-        protocol_handler: ProtocolHandler instance to register with.
-    """
-    tool = GetDocumentSummaryTool()
-
-    async def handler(
-        doc_id: str,
-        collection: str | None = None,
-    ) -> types.CallToolResult:
-        """Handler function for MCP tool calls."""
-        return await tool.execute(doc_id=doc_id, collection=collection)
-
-    protocol_handler.register_tool(
-        name=TOOL_NAME,
-        description=TOOL_DESCRIPTION,
-        input_schema=TOOL_INPUT_SCHEMA,
-        handler=handler,
-    )
-
-    logger.info(f"Registered MCP tool: {TOOL_NAME}")
