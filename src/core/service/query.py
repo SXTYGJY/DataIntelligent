@@ -1,0 +1,383 @@
+"""Knowledge query business service.
+
+Owns the retrieval orchestration pipeline — hybrid search (dense + sparse +
+RRF fusion), optional reranking, response building and query tracing.  The
+MCP tool layer only validates arguments and maps the resulting
+:class:`MCPToolResponse` to the protocol.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from src.core.response.response_builder import MCPToolResponse, ResponseBuilder
+from src.core.settings import Settings, load_settings, resolve_path
+from src.core.trace import TraceCollector, TraceContext
+from src.core.types import RetrievalResult
+
+if TYPE_CHECKING:
+    from src.core.query_engine.hybrid_search import HybridSearch
+    from src.core.query_engine.reranker import CoreReranker
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class QueryKnowledgeHubConfig:
+    """Configuration for knowledge queries.
+
+    Attributes:
+        default_top_k: Default number of results if not specified
+        max_top_k: Maximum allowed top_k value
+        default_collection: Default collection if not specified
+        enable_rerank: Whether to apply reranking
+    """
+
+    default_top_k: int = 5
+    max_top_k: int = 20
+    default_collection: str = "default"
+    enable_rerank: bool = True
+
+
+class KnowledgeQueryService:
+    """Business service for knowledge base queries.
+
+    Coordinates HybridSearch and Reranker to produce a formatted
+    :class:`MCPToolResponse`.
+
+    Design Principles:
+    - Lazy initialization: Components created on first use
+    - Error resilience: Graceful handling of search/rerank failures
+    - Configurable: All parameters from settings.yaml
+    """
+
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        config: QueryKnowledgeHubConfig | None = None,
+        hybrid_search: HybridSearch | None = None,
+        reranker: CoreReranker | None = None,
+        response_builder: ResponseBuilder | None = None,
+    ) -> None:
+        """Initialize KnowledgeQueryService.
+
+        Args:
+            settings: Application settings. If None, loaded from default path.
+            config: Service configuration. If None, uses defaults.
+            hybrid_search: Optional pre-configured HybridSearch instance.
+            reranker: Optional pre-configured CoreReranker instance.
+            response_builder: Optional pre-configured ResponseBuilder instance.
+        """
+        self._settings = settings
+        self.config = config or QueryKnowledgeHubConfig()
+        self._hybrid_search = hybrid_search
+        self._reranker = reranker
+        self._embedding_client = None
+        self._response_builder = response_builder or ResponseBuilder()
+
+        # Track initialization state
+        self._initialized = False
+        self._current_collection: str | None = None
+
+    @property
+    def settings(self) -> Settings:
+        """Get settings, loading if necessary."""
+        if self._settings is None:
+            self._settings = load_settings()
+        return self._settings
+
+    def _ensure_initialized(self, collection: str) -> None:
+        """Ensure search components are initialized for the given collection.
+
+        Caching strategy (balances speed vs freshness):
+        - **Fully cached** (stateless, never go stale): embedding client,
+          reranker, query processor, settings.
+        - **Cached until collection changes**: vector store (ChromaDB
+          PersistentClient reads from SQLite — sees data written by other
+          processes), dense retriever, hybrid search.
+        - **Auto-refreshes on every query**: BM25 sparse index — the
+          ``SparseRetriever._ensure_index_loaded()`` always reloads from
+          disk, so the cached SparseRetriever object is fine.
+
+        Only when *collection* changes do we tear down and rebuild.
+
+        Args:
+            collection: Target collection name.
+        """
+        # Always rebuild vector_store and retriever components so that
+        # data ingested by other processes (e.g. Dashboard) is visible
+        # immediately without requiring an MCP Server restart.
+        logger.info(f"Initializing query components for collection: {collection}")
+
+        # Import here to avoid circular imports and allow lazy loading
+        from src.core.query_engine.dense_retriever import create_dense_retriever
+        from src.core.query_engine.hybrid_search import create_hybrid_search
+        from src.core.query_engine.query_processor import QueryProcessor
+        from src.core.query_engine.reranker import create_core_reranker
+        from src.core.query_engine.sparse_retriever import create_sparse_retriever
+        from src.ingestion.storage.bm25_indexer import BM25Indexer
+        from src.libs.embedding.embedding_factory import EmbeddingFactory
+        from src.libs.vector_store.vector_store_factory import VectorStoreFactory
+
+        # === Fully cached components (stateless, never go stale) ===
+        if self._embedding_client is None:
+            self._embedding_client = EmbeddingFactory.create(self.settings)
+
+        if self._reranker is None:
+            self._reranker = create_core_reranker(settings=self.settings)
+
+        # === Rebuild for new collection ===
+        # ChromaDB PersistentClient uses SQLite under the hood —
+        # concurrent readers see committed writes from other processes
+        # (dashboard ingestion), so caching the client is safe.
+        vector_store = VectorStoreFactory.create(
+            self.settings,
+            collection_name=collection,
+        )
+
+        dense_retriever = create_dense_retriever(
+            settings=self.settings,
+            embedding_client=self._embedding_client,
+            vector_store=vector_store,
+        )
+
+        # BM25Indexer just holds the index dir path; the SparseRetriever
+        # calls _ensure_index_loaded() on every search, which always
+        # reloads from disk — so it picks up dashboard-written data.
+        bm25_indexer = BM25Indexer(
+            index_dir=str(resolve_path(f"data/db/bm25/{collection}"))
+        )
+        sparse_retriever = create_sparse_retriever(
+            settings=self.settings,
+            bm25_indexer=bm25_indexer,
+            vector_store=vector_store,
+        )
+        sparse_retriever.default_collection = collection
+
+        query_processor = QueryProcessor()
+        self._hybrid_search = create_hybrid_search(
+            settings=self.settings,
+            query_processor=query_processor,
+            dense_retriever=dense_retriever,
+            sparse_retriever=sparse_retriever,
+        )
+
+        self._current_collection = collection
+        self._initialized = True
+        logger.info(f"Query components initialized for collection: {collection}")
+
+    def _perform_search(
+        self,
+        query: str,
+        top_k: int,
+        trace: Any | None = None,
+    ) -> list[RetrievalResult]:
+        """Perform hybrid search.
+
+        Args:
+            query: Search query.
+            top_k: Maximum results.
+            trace: Optional TraceContext for observability.
+
+        Returns:
+            List of RetrievalResult.
+        """
+        if self._hybrid_search is None:
+            raise RuntimeError("HybridSearch not initialized")
+
+        # Use a larger initial retrieval for reranking
+        initial_top_k = top_k * 2 if self.config.enable_rerank else top_k
+
+        try:
+            results = self._hybrid_search.search(
+                query=query,
+                top_k=initial_top_k,
+                filters=None,
+                trace=trace,
+                return_details=False,
+            )
+            return results if isinstance(results, list) else results.results
+        except Exception as e:
+            logger.warning(f"Hybrid search failed: {e}")
+            return []
+
+    def _apply_rerank(
+        self,
+        query: str,
+        results: list[RetrievalResult],
+        top_k: int,
+        trace: Any | None = None,
+    ) -> list[RetrievalResult]:
+        """Apply reranking to search results.
+
+        Args:
+            query: Original query.
+            results: Search results to rerank.
+            top_k: Final number of results.
+            trace: Optional TraceContext for observability.
+
+        Returns:
+            Reranked results (or original if reranking fails).
+        """
+        if self._reranker is None or not self._reranker.is_enabled:
+            return results[:top_k]
+
+        try:
+            rerank_result = self._reranker.rerank(
+                query=query,
+                results=results,
+                top_k=top_k,
+                trace=trace,
+            )
+
+            if rerank_result.used_fallback:
+                logger.warning(f"Reranker fallback: {rerank_result.fallback_reason}")
+
+            return rerank_result.results
+        except Exception as e:
+            logger.warning(f"Reranking failed, using original order: {e}")
+            return results[:top_k]
+
+    def _build_error_response(
+        self,
+        query: str,
+        collection: str,
+        error_message: str,
+    ) -> MCPToolResponse:
+        """Build error response.
+
+        Args:
+            query: Original query.
+            collection: Target collection.
+            error_message: Error description.
+
+        Returns:
+            MCPToolResponse indicating error.
+        """
+        content = "## 查询失败\n\n"
+        content += f"查询: **{query}**\n"
+        content += f"集合: `{collection}`\n\n"
+        content += f"**错误信息:** {error_message}\n\n"
+        content += "请检查:\n"
+        content += "- 数据库连接是否正常\n"
+        content += "- 集合是否已创建并包含数据\n"
+        content += "- 配置文件是否正确\n"
+
+        return MCPToolResponse(
+            content=content,
+            citations=[],
+            metadata={
+                "query": query,
+                "collection": collection,
+                "error": error_message,
+            },
+            is_empty=True,
+        )
+
+    async def query(
+        self,
+        query: str,
+        top_k: int | None = None,
+        collection: str | None = None,
+    ) -> MCPToolResponse:
+        """Run a knowledge query and build the formatted response.
+
+        Args:
+            query: Search query string.
+            top_k: Maximum results to return.
+            collection: Target collection name.
+
+        Returns:
+            MCPToolResponse with formatted content, citations and metadata.
+
+        Raises:
+            ValueError: If query is empty or invalid.
+        """
+        # Validate query
+        if not query or not query.strip():
+            raise ValueError("Query cannot be empty")
+
+        # Apply defaults
+        effective_top_k = min(
+            top_k or self.config.default_top_k,
+            self.config.max_top_k,
+        )
+        effective_collection = collection or self.config.default_collection
+
+        logger.info(
+            f"Executing knowledge query: query='{query[:50]}...', "
+            f"top_k={effective_top_k}, collection={effective_collection}"
+        )
+
+        trace = TraceContext(trace_type="query")
+        trace.metadata["query"] = query[:200]
+        trace.metadata["top_k"] = effective_top_k
+        trace.metadata["collection"] = effective_collection
+        trace.metadata["source"] = "mcp"
+
+        try:
+            # Initialize components for collection
+            # Run blocking I/O (embedding API, ChromaDB, BM25) in a thread
+            # to avoid blocking the async event loop / MCP stdio transport
+            import time as _time
+
+            _init_t0 = _time.monotonic()
+            await asyncio.to_thread(self._ensure_initialized, effective_collection)
+            _init_elapsed = (_time.monotonic() - _init_t0) * 1000.0
+            trace.record_stage(
+                "initialization",
+                {
+                    "collection": effective_collection,
+                    "cold_start": _init_elapsed > 500,  # >500ms ≈ cold
+                },
+                elapsed_ms=_init_elapsed,
+            )
+
+            # Perform hybrid search (blocking: embedding API + DB queries)
+            results = await asyncio.to_thread(
+                self._perform_search, query, effective_top_k, trace,
+            )
+
+            # Apply reranking if enabled (may call LLM API)
+            if self.config.enable_rerank and results:
+                results = await asyncio.to_thread(
+                    self._apply_rerank, query, results, effective_top_k, trace,
+                )
+
+            # Build response
+            response = self._response_builder.build(
+                results=results,
+                query=query,
+                collection=effective_collection,
+            )
+
+            # Store final results in trace for dashboard display
+            trace.metadata["final_results"] = [
+                {
+                    "chunk_id": r.chunk_id,
+                    "score": round(r.score, 4),
+                    "text": r.text or "",
+                    "source": r.metadata.get(
+                        "source_path", r.metadata.get("source", "")
+                    ),
+                    "title": r.metadata.get("title", ""),
+                }
+                for r in results
+            ]
+
+            logger.info(
+                f"Knowledge query completed: {len(results)} results, "
+                f"is_empty={response.is_empty}"
+            )
+            trace.record_stage("response_building", {"is_empty": response.is_empty})
+            TraceCollector().collect(trace)
+            return response
+
+        except Exception as e:
+            logger.exception(f"Knowledge query failed: {e}")
+            TraceCollector().collect(trace)
+            # Return error response
+            return self._build_error_response(query, effective_collection, str(e))

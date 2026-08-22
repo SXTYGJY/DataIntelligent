@@ -178,6 +178,14 @@ class IngestionSettings:
 
 
 @dataclass(frozen=True)
+class ServiceSettings:
+    """Streamable HTTP service binding settings."""
+
+    host: str = "127.0.0.1"
+    port: int = 57666
+
+
+@dataclass(frozen=True)
 class Settings:
     llm: LLMSettings
     embedding: EmbeddingSettings
@@ -188,6 +196,7 @@ class Settings:
     observability: ObservabilitySettings
     ingestion: IngestionSettings | None = None
     vision_llm: VisionLLMSettings | None = None
+    service: ServiceSettings | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Settings:
@@ -227,6 +236,15 @@ class Settings:
                 azure_endpoint=vision_llm.get("azure_endpoint"),
                 deployment_name=vision_llm.get("deployment_name"),
                 base_url=vision_llm.get("base_url"),
+            )
+
+
+        service_settings = None
+        if "service" in data:
+            service = _require_mapping(data, "service", "settings")
+            service_settings = ServiceSettings(
+                host=service.get("host", "127.0.0.1"),
+                port=service.get("port", 57666),
             )
 
         settings = cls(
@@ -281,6 +299,7 @@ class Settings:
             ),
             ingestion=ingestion_settings,
             vision_llm=vision_llm_settings,
+            service=service_settings,
         )
 
         return settings

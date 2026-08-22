@@ -1,7 +1,7 @@
-"""Unit tests for list_collections MCP tool.
+"""Unit tests for the collection listing business service.
 
-This module tests the ListCollectionsTool class that provides
-collection listing capabilities through the MCP protocol.
+This module tests :class:`CollectionService` and :func:`format_collections_response`
+in ``src.core.service.collections``.
 """
 
 from pathlib import Path
@@ -9,10 +9,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.mcp_server.tool.list_collections import (
+from src.core.service.collections import (
     CollectionInfo,
+    CollectionService,
     ListCollectionsConfig,
-    ListCollectionsTool,
+    format_collections_response,
 )
 
 # =============================================================================
@@ -38,15 +39,15 @@ def mock_config() -> ListCollectionsConfig:
 
 
 @pytest.fixture
-def tool_with_mock_settings(mock_settings: Mock) -> ListCollectionsTool:
-    """Create ListCollectionsTool with mock settings."""
-    return ListCollectionsTool(settings=mock_settings)
+def service_with_mock_settings(mock_settings: Mock) -> CollectionService:
+    """Create CollectionService with mock settings."""
+    return CollectionService(settings=mock_settings)
 
 
 @pytest.fixture
-def tool_with_config(mock_config: ListCollectionsConfig) -> ListCollectionsTool:
-    """Create ListCollectionsTool with explicit config."""
-    return ListCollectionsTool(config=mock_config)
+def service_with_config(mock_config: ListCollectionsConfig) -> CollectionService:
+    """Create CollectionService with explicit config."""
+    return CollectionService(config=mock_config)
 
 
 @pytest.fixture
@@ -164,81 +165,81 @@ class TestListCollectionsConfig:
 
 
 # =============================================================================
-# ListCollectionsTool Initialization Tests
+# CollectionService Initialization Tests
 # =============================================================================
 
-class TestListCollectionsToolInit:
-    """Tests for ListCollectionsTool initialization."""
+class TestCollectionServiceInit:
+    """Tests for CollectionService initialization."""
 
     def test_init_with_settings(self, mock_settings: Mock) -> None:
         """Test initialization with settings."""
-        tool = ListCollectionsTool(settings=mock_settings)
+        service = CollectionService(settings=mock_settings)
 
-        assert tool._settings == mock_settings
-        assert tool._config is None
+        assert service._settings == mock_settings
+        assert service._config is None
 
     def test_init_with_config(self, mock_config: ListCollectionsConfig) -> None:
         """Test initialization with explicit config."""
-        tool = ListCollectionsTool(config=mock_config)
+        service = CollectionService(config=mock_config)
 
-        assert tool._settings is None
-        assert tool._config == mock_config
+        assert service._settings is None
+        assert service._config == mock_config
 
     def test_init_no_args(self) -> None:
         """Test initialization without arguments."""
-        tool = ListCollectionsTool()
+        service = CollectionService()
 
-        assert tool._settings is None
-        assert tool._config is None
+        assert service._settings is None
+        assert service._config is None
 
     def test_settings_lazy_load(self) -> None:
         """Test that settings are loaded lazily."""
-        tool = ListCollectionsTool()
+        service = CollectionService()
 
         with patch('src.core.settings.load_settings') as mock_load:
             mock_settings = Mock()
             mock_load.return_value = mock_settings
 
             # Access settings property
-            result = tool.settings
+            result = service.settings
 
             mock_load.assert_called_once()
             assert result == mock_settings
 
     def test_config_derived_from_settings(self, mock_settings: Mock) -> None:
         """Test that config is derived from settings."""
-        tool = ListCollectionsTool(settings=mock_settings)
+        service = CollectionService(settings=mock_settings)
 
-        config = tool.config
+        config = service.config
 
         assert config.persist_directory == "data/db/chroma"
 
     def test_config_fallback_no_vector_store(self) -> None:
         """Test config fallback when vector_store config missing."""
         settings = Mock(spec=[])  # No vector_store attribute
-        tool = ListCollectionsTool(settings=settings)
+        service = CollectionService(settings=settings)
 
-        config = tool.config
+        config = service.config
 
         assert config.persist_directory == "data/db/chroma"
 
 
 # =============================================================================
-# ListCollectionsTool ChromaDB Client Tests
+# CollectionService ChromaDB Client Tests
 # =============================================================================
 
-class TestListCollectionsToolChromaClient:
+class TestCollectionServiceChromaClient:
     """Tests for ChromaDB client management."""
 
     def test_get_chroma_client_chromadb_not_installed(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test error when chromadb is not installed."""
         with patch.dict('sys.modules', {'chromadb': None}):
             with patch('builtins.__import__', side_effect=ImportError("No chromadb")):
                 with pytest.raises(ImportError) as exc_info:
-                    tool_with_config._get_chroma_client()
+                    service_with_config._get_chroma_client()
 
                 assert "chromadb package is required" in str(exc_info.value)
 
@@ -248,19 +249,19 @@ class TestListCollectionsToolChromaClient:
         self,
         mock_chroma_settings: Mock,
         mock_client_class: Mock,
-        tool_with_config: ListCollectionsTool,
+        service_with_config: CollectionService,
         tmp_path: Path,
     ) -> None:
         """Test successful ChromaDB client creation."""
         # Update config to use temp path
-        tool_with_config._config = ListCollectionsConfig(
+        service_with_config._config = ListCollectionsConfig(
             persist_directory=str(tmp_path / "chroma")
         )
 
         mock_client = Mock()
         mock_client_class.return_value = mock_client
 
-        result = tool_with_config._get_chroma_client()
+        result = service_with_config._get_chroma_client()
 
         assert result == mock_client
         mock_client_class.assert_called_once()
@@ -271,18 +272,18 @@ class TestListCollectionsToolChromaClient:
         self,
         mock_chroma_settings: Mock,
         mock_client_class: Mock,
-        tool_with_config: ListCollectionsTool,
+        service_with_config: CollectionService,
         tmp_path: Path,
     ) -> None:
         """Test that missing directory is created."""
         new_path = tmp_path / "new_chroma_dir"
-        tool_with_config._config = ListCollectionsConfig(
+        service_with_config._config = ListCollectionsConfig(
             persist_directory=str(new_path)
         )
 
         mock_client_class.return_value = Mock()
 
-        tool_with_config._get_chroma_client()
+        service_with_config._get_chroma_client()
 
         assert new_path.exists()
 
@@ -292,24 +293,24 @@ class TestListCollectionsToolChromaClient:
         self,
         mock_chroma_settings: Mock,
         mock_client_class: Mock,
-        tool_with_config: ListCollectionsTool,
+        service_with_config: CollectionService,
         tmp_path: Path,
     ) -> None:
         """Test error handling when client init fails."""
-        tool_with_config._config = ListCollectionsConfig(
+        service_with_config._config = ListCollectionsConfig(
             persist_directory=str(tmp_path)
         )
 
         mock_client_class.side_effect = Exception("Connection failed")
 
         with pytest.raises(RuntimeError) as exc_info:
-            tool_with_config._get_chroma_client()
+            service_with_config._get_chroma_client()
 
         assert "Failed to initialize ChromaDB client" in str(exc_info.value)
 
 
 # =============================================================================
-# ListCollectionsTool list_collections Method Tests
+# CollectionService list_collections Method Tests
 # =============================================================================
 
 class TestListCollectionsMethod:
@@ -317,20 +318,20 @@ class TestListCollectionsMethod:
 
     def test_list_collections_empty(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test listing when no collections exist."""
         mock_client = Mock()
         mock_client.list_collections.return_value = []
 
-        with patch.object(tool_with_config, '_get_chroma_client', return_value=mock_client):
-            result = tool_with_config.list_collections()
+        with patch.object(service_with_config, '_get_chroma_client', return_value=mock_client):
+            result = service_with_config.list_collections()
 
         assert result == []
 
     def test_list_collections_with_stats(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test listing collections with statistics."""
         mock_coll1 = Mock()
@@ -346,8 +347,8 @@ class TestListCollectionsMethod:
         mock_client = Mock()
         mock_client.list_collections.return_value = [mock_coll1, mock_coll2]
 
-        with patch.object(tool_with_config, '_get_chroma_client', return_value=mock_client):
-            result = tool_with_config.list_collections(include_stats=True)
+        with patch.object(service_with_config, '_get_chroma_client', return_value=mock_client):
+            result = service_with_config.list_collections(include_stats=True)
 
         assert len(result) == 2
         assert result[0].name == "collection1"
@@ -358,7 +359,7 @@ class TestListCollectionsMethod:
 
     def test_list_collections_without_stats(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test listing collections without statistics."""
         mock_coll = Mock()
@@ -368,8 +369,8 @@ class TestListCollectionsMethod:
         mock_client = Mock()
         mock_client.list_collections.return_value = [mock_coll]
 
-        with patch.object(tool_with_config, '_get_chroma_client', return_value=mock_client):
-            result = tool_with_config.list_collections(include_stats=False)
+        with patch.object(service_with_config, '_get_chroma_client', return_value=mock_client):
+            result = service_with_config.list_collections(include_stats=False)
 
         assert len(result) == 1
         assert result[0].name == "test"
@@ -378,7 +379,7 @@ class TestListCollectionsMethod:
 
     def test_list_collections_count_error_graceful(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test graceful handling when count() fails."""
         mock_coll = Mock()
@@ -389,8 +390,8 @@ class TestListCollectionsMethod:
         mock_client = Mock()
         mock_client.list_collections.return_value = [mock_coll]
 
-        with patch.object(tool_with_config, '_get_chroma_client', return_value=mock_client):
-            result = tool_with_config.list_collections(include_stats=True)
+        with patch.object(service_with_config, '_get_chroma_client', return_value=mock_client):
+            result = service_with_config.list_collections(include_stats=True)
 
         # Should still return collection, but with None count
         assert len(result) == 1
@@ -399,66 +400,66 @@ class TestListCollectionsMethod:
 
     def test_list_collections_client_error(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test error handling when client fails."""
         with patch.object(
-            tool_with_config,
+            service_with_config,
             '_get_chroma_client',
             side_effect=RuntimeError("Client error")
         ):
-            result = tool_with_config.list_collections()
+            result = service_with_config.list_collections()
 
         assert result == []
 
     def test_list_collections_list_error(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test error handling when list_collections fails."""
         mock_client = Mock()
         mock_client.list_collections.side_effect = Exception("List failed")
 
-        with patch.object(tool_with_config, '_get_chroma_client', return_value=mock_client):
-            result = tool_with_config.list_collections()
+        with patch.object(service_with_config, '_get_chroma_client', return_value=mock_client):
+            result = service_with_config.list_collections()
 
         assert result == []
 
 
 # =============================================================================
-# ListCollectionsTool format_response Method Tests
+# CollectionService response formatting
 # =============================================================================
 
 class TestFormatResponse:
-    """Tests for format_response method."""
+    """Tests for format_collections_response."""
 
     def test_format_empty_collections(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test formatting empty collection list."""
-        result = tool_with_config.format_response([])
+        result = format_collections_response([])
 
         assert result == "No collections found in the knowledge base."
 
     def test_format_single_collection(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test formatting single collection."""
         collections = [CollectionInfo(name="docs", count=50)]
-        result = tool_with_config.format_response(collections)
+        result = format_collections_response(collections)
 
         assert "## Available Collections (1 total)" in result
         assert "1. **docs** - 50 documents" in result
 
     def test_format_multiple_collections(
         self,
-        tool_with_config: ListCollectionsTool,
+        service_with_config: CollectionService,
         sample_collections: list[CollectionInfo]
     ) -> None:
         """Test formatting multiple collections."""
-        result = tool_with_config.format_response(sample_collections)
+        result = format_collections_response(sample_collections)
 
         assert "## Available Collections (3 total)" in result
         assert "1. **knowledge_hub** - 150 documents" in result
@@ -467,7 +468,7 @@ class TestFormatResponse:
 
     def test_format_with_metadata(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test formatting with user metadata."""
         collections = [
@@ -477,7 +478,7 @@ class TestFormatResponse:
                 metadata={"category": "papers", "year": 2024},
             )
         ]
-        result = tool_with_config.format_response(collections)
+        result = format_collections_response(collections)
 
         assert "**research**" in result
         assert "30 documents" in result
@@ -486,7 +487,7 @@ class TestFormatResponse:
 
     def test_format_filters_internal_metadata(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test that internal metadata is filtered out."""
         collections = [
@@ -500,7 +501,7 @@ class TestFormatResponse:
                 },
             )
         ]
-        result = tool_with_config.format_response(collections)
+        result = format_collections_response(collections)
 
         # Internal metadata should be filtered
         assert "hnsw:space" not in result
@@ -510,83 +511,15 @@ class TestFormatResponse:
 
     def test_format_without_count(
         self,
-        tool_with_config: ListCollectionsTool
+        service_with_config: CollectionService
     ) -> None:
         """Test formatting when count is None."""
         collections = [CollectionInfo(name="no_count")]
-        result = tool_with_config.format_response(collections)
+        result = format_collections_response(collections)
 
         assert "1. **no_count**" in result
         assert "documents" not in result  # No count shown
 
 
 # =============================================================================
-# ListCollectionsTool execute Method Tests
-# =============================================================================
-
-class TestExecuteMethod:
-    """Tests for async execute method."""
-
-    @pytest.mark.asyncio
-    async def test_execute_success(
-        self,
-        tool_with_config: ListCollectionsTool,
-        sample_collections: list[CollectionInfo]
-    ) -> None:
-        """Test successful execution."""
-        with patch.object(
-            tool_with_config,
-            'list_collections',
-            return_value=sample_collections
-        ):
-            result = await tool_with_config.execute(include_stats=True)
-
-        assert result.is_error is False
-        assert len(result.content) == 1
-        assert result.content[0].type == "text"
-        assert "Available Collections (3 total)" in result.content[0].text
-        assert result.structured_content == {
-            "collections": [c.to_dict() for c in sample_collections],
-            "count": 3,
-        }
-
-    @pytest.mark.asyncio
-    async def test_execute_empty_result(
-        self,
-        tool_with_config: ListCollectionsTool
-    ) -> None:
-        """Test execution with no collections."""
-        with patch.object(tool_with_config, 'list_collections', return_value=[]):
-            result = await tool_with_config.execute()
-
-        assert result.is_error is False
-        assert "No collections found" in result.content[0].text
-
-    @pytest.mark.asyncio
-    async def test_execute_error(
-        self,
-        tool_with_config: ListCollectionsTool
-    ) -> None:
-        """Test execution error handling."""
-        with patch.object(
-            tool_with_config,
-            'list_collections',
-            side_effect=Exception("Unexpected error")
-        ):
-            result = await tool_with_config.execute()
-
-        assert result.is_error is True
-        assert "Error listing collections" in result.content[0].text
-
-    @pytest.mark.asyncio
-    async def test_execute_passes_include_stats(
-        self,
-        tool_with_config: ListCollectionsTool
-    ) -> None:
-        """Test that include_stats is passed correctly."""
-        mock_list = Mock(return_value=[])
-
-        with patch.object(tool_with_config, 'list_collections', mock_list):
-            await tool_with_config.execute(include_stats=False)
-
-        mock_list.assert_called_once_with(include_stats=False)
+# CollectionService execute Method Tests

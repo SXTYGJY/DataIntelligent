@@ -354,8 +354,9 @@ DataIntelligent 本身是最终产品的 MCP Server，对外提供统一的数�
 
 #### 3.2.2 传输协议：Stdio 本地通信
 
-本项目采用 **Stdio Transport** 作为唯一通信模式。
+本项目默认采用 **Stdio Transport**，并支持可选的 **Streamable HTTP Transport** 双传输模式。
 
+**Stdio（默认）**
 - **工作方式**：Client（VS Code Copilot、Claude Desktop）以子进程方式启动我们的 Server，双方通过标准输入/输出交换 JSON-RPC 消息。
 - **选型理由**：
 	- **零配置**：无需网络端口、无需鉴权，用户只需在 Client 配置文件中指定启动命令即可使用。
@@ -364,6 +365,14 @@ DataIntelligent 本身是最终产品的 MCP Server，对外提供统一的数�
 - **实现约束**：
 	- `stdout` 仅输出合法 MCP 消息，禁止混入任何日志或调试信息。
 	- 日志统一输出至 `stderr`，避免污染通信通道。
+
+**Streamable HTTP（可选，`--transport http`）**
+- **工作方式**：以 uvicorn 启动 Starlette ASGI 应用，端点默认 `http://127.0.0.1:57666/mcp`（SSE 响应、无状态会话），供支持 Streamable HTTP 的 MCP Client 接入。
+- **选型理由**：为多客户端/远程（经网关或鉴权后）访问提供统一 HTTP 入口；stdio 与 HTTP 共用同一 `ToolRegistry`，工具行为一致。
+- **实现约束**：
+	- 默认仅绑定 `127.0.0.1`；MCP Streamable HTTP 无内置鉴权，远程访问需自行增加鉴权层。
+	- 绑定地址/端口由 `config/settings.yaml` 的 `service:` 段或 `--host` / `--port` 参数控制。
+	- 传输接线见 `src/mcp_server/http_app.py`（`create_http_app`），运行入口见 `src/mcp_server/http_server.py`（`mcp-server-http`）。
 
 #### 3.2.3 SDK 与实现库选型
 
@@ -380,11 +389,11 @@ DataIntelligent 本身是最终产品的 MCP Server，对外提供统一的数�
 
 - **协议版本**：跟踪 MCP 最新稳定版本（如 `2025-06-18`），在 `initialize` 阶段进行版本协商，确保 Client/Server 兼容性。
 
-#### 3.2.4 MCP Tool 抽象与工具目录 (`tool/base.py` / `tool/tool_registry.py`)
+#### 3.2.4 MCP Tool 抽象与工具目录 (`tool/base.py` / `tool/tool_manager.py`)
 
-DataIntelligent 对外暴露业务级 MCP Tool，而不是 MySQL 底层操作函数或 RAG Pipeline 内部组件。新增 `src/mcp_server/tool/` 目录：所有可调用 Tool 继承 `base.py` 中的 `BaseTool`，所有 Tool 的注册、发现和执行只经 `tool_registry.py`。MCP SDK 的 `tools/list` 与 `tools/call` 仅是 Registry 的协议适配层。
+DataIntelligent 对外暴露业务级 MCP Tool，而不是 MySQL 底层操作函数或 RAG Pipeline 内部组件。`src/mcp_server/tool/` 目录只承载**协议适配**：`base.py` 定义 `BaseTool` 描述符与 `ToolResult`/`ToolContext` 契约，`tool_manager.py` 的 `ToolRegistry` 是注册、发现、prompt 与执行的**唯一边界**；MCP SDK 的 `tools/list` / `tools/call` / `prompts/list` / `prompts/get` 仅是 Registry 的协议适配层。
 
-本轮不再单独引入 `ToolExecutor`：`ToolRegistry.exec()` 是唯一执行入口，集中处理 Tool 查找、调用、结果归一化和异常边界。这样可以消除当前各 Tool 分散定义注册函数与 handler 的方式，新增 Tool 不需要修改协议处理逻辑。
+**分层约束（MCP 侧瘦身）**：业务实现**不在** MCP 侧。三个已发布 Tool 的文件是**薄适配器**——只做输入校验、委托业务服务、把结果映射为 `ToolResult`；检索编排（混合检索/重排/响应构建/追踪）、集合枚举、文档摘要等业务逻辑全部下沉到 `src/core/service/` 业务服务层。`ToolRegistry.exec()` 仍是唯一执行入口，集中处理 Tool 查找、调用、结果归一化和异常边界；新增 Tool 不需要修改协议处理逻辑。
 
 ##### `tool/base.py`：统一 Tool 契约
 
@@ -570,7 +579,19 @@ MCP 协议的 Tool 返回格式支持多种内容类型（`content` 数组），
 
 > **术语说明**：本节中的"提供者 (Provider)"、"实现 (Implementation)"指的是完成某项功能的**具体技术方案**，而非传统 Web 架构中的"后端服务器"。例如，LLM 提供者可以是远程的 Azure OpenAI API，也可以是本地运行的 Ollama；向量存储可以是本地嵌入式的 Chroma，也可以是云端托管的 Pinecone。本项目作为本地 MCP Server，通过统一接口对接这些不同的提供者，实现灵活切换。
 
-#### 3.3.1 设计原则
+
+
+#### 3.2.7 分层架构（协议 / 适配 / 业务服务）
+
+为保持 MCP 侧精简，代码按三层组织：
+
+| 层 | 位置 | 职责 |
+|----|------|------|
+| 协议层 | `src/mcp_server/protocol_handler.py` / `server.py` / `http_app.py` | 传输（stdio / Streamable HTTP）与 JSON-RPC 适配，能力协商 |
+| 适配层 | `src/mcp_server/tool/*.py` | `BaseTool` 描述符 + 薄 `execute()`：输入校验、委托服务、映射 `ToolResult` |
+| 业务服务层 | `src/core/service/*.py` | 检索编排（`KnowledgeQueryService`）、集合枚举（`CollectionService`）、文档摘要（`DocumentSummaryService`）、重依赖预载（`preload.py`） |
+
+**规则**：`src/mcp_server` 不得包含业务编排、存储直连或重组件管理；新增业务能力先在 `src/core/service/` 实现，再注册为薄 Tool。#### 3.3.1 设计原则
 
 - **接口隔离 (Interface Segregation)**：为每类组件定义最小化的抽象接口，上层业务逻辑仅依赖接口而非具体实现。
 - **配置驱动 (Configuration-Driven)**：通过统一配置文件（如 `settings.yaml`）指定各组件的具体后端，代码无需修改即可切换实现。
@@ -1544,22 +1565,30 @@ smart-knowledge-hub/
 │
 ├── src/                                 # 源代码主目录
 │   │
-│   ├── mcp_server/                      # MCP Server 层 (接口层)
+│   ├── mcp_server/                      # MCP Server 层 (协议层)
 │   │   ├── __init__.py
-│   │   ├── server.py                    # MCP Server 入口 (Stdio Transport)
+│   │   ├── server.py                    # MCP Server 入口（stdio 默认 / --transport http）
+│   │   ├── http_app.py                  # Streamable HTTP ASGI 接线（/mcp, SSE, stateless）
+│   │   ├── http_server.py               # Streamable HTTP 运行入口（uvicorn）
 │   │   ├── protocol_handler.py          # MCP SDK 协议适配：委托 ToolRegistry
-│   │   └── tool/                        # MCP Tool 统一目录
+│   │   └── tool/                        # MCP Tool 适配层（薄适配器）
 │   │       ├── __init__.py
 │   │       ├── base.py                  # BaseTool、ToolContext、ToolResult 统一契约
-│   │       ├── tool_registry.py         # 注册、发现、tools/list 与 exec 唯一执行入口
-│   │       ├── query_knowledge_hub.py   # 主检索工具
-│   │       ├── list_collections.py      # 列出集合工具
-│   │       └── get_document_summary.py  # 文档摘要工具
+│   │       ├── tool_manager.py          # ToolRegistry：注册、发现、prompt、exec 唯一执行入口
+│   │       ├── query_knowledge_hub.py   # 主检索工具（委托 KnowledgeQueryService）
+│   │       ├── list_collections.py      # 列出集合工具（委托 CollectionService）
+│   │       └── get_document_summary.py  # 文档摘要工具（委托 DocumentSummaryService）
 │   │
 │   ├── core/                            # Core 层 (核心业务逻辑)
 │   │   ├── __init__.py
 │   │   ├── settings.py                   # 配置加载与校验 (Settings：load_settings/validate_settings)
 │   │   ├── types.py                      # 核心数据类型/契约（Document/Chunk/ChunkRecord），供 ingestion/retrieval/mcp 复用
+│   │   ├── service/                     # 业务服务层（MCP 适配层调用的业务入口）
+│   │   │   ├── __init__.py
+│   │   │   ├── query.py                 # KnowledgeQueryService：混合检索+重排+响应构建+追踪
+│   │   │   ├── collections.py           # CollectionService：集合枚举与格式化
+│   │   │   ├── document_summary.py      # DocumentSummaryService：文档摘要提取
+│   │   │   └── preload.py               # 重依赖预载（避免 to_thread 导入锁死锁）
 │   │   │
 │   │   ├── query_engine/                # 查询引擎模块
 │   │   │   ├── __init__.py
@@ -1758,11 +1787,13 @@ smart-knowledge-hub/
 
 | 模块 | 职责 | 关键技术点 |
 |-----|-----|----------|
-| `server.py` | MCP Server 主入口，处理 Stdio Transport 通信 | Python MCP SDK，JSON-RPC 2.0 |
-| `protocol_handler.py` | MCP SDK 协议适配与能力协商 | `tools/list` 委托 Registry，`tools/call` 委托 `Registry.exec` |
-| `tool/base.py` | 所有 MCP Tool 的统一抽象契约 | 元数据、`ToolContext`、`ToolResult`、`execute(arguments, context)` |
-| `tool/tool_registry.py` | 已实现 Tool 的唯一目录与唯一执行入口 | `register/get/list/list_mcp_tools/exec`、异常和 MCP 响应归一化 |
-| `tool/<tool>.py` | `BaseTool` 的具体业务实现 | 仅业务编排与领域错误，不含 SDK 注册代码 |
+| `server.py` | MCP Server 主入口，默认 Stdio，`--transport http` 可选 | Python MCP SDK，JSON-RPC 2.0；stdout 仅 MCP 消息 |
+| `http_app.py` / `http_server.py` | Streamable HTTP 传输（ASGI / uvicorn） | `/mcp`，SSE，stateless，默认绑定 127.0.0.1 |
+| `protocol_handler.py` | MCP SDK 协议适配与能力协商 | `tools/list` 委托 Registry，`tools/call` 委托 `Registry.exec`，prompts 委托 |
+| `tool/base.py` | 所有 MCP Tool 的统一抽象契约 | `BaseTool` 描述符、`ToolContext`、`ToolResult` |
+| `tool/tool_manager.py` | 已实现 Tool 的唯一目录与唯一执行入口 | `ToolRegistry.register/get/list/list_mcp_tools/list_prompt/exec`、异常和 MCP 响应归一化 |
+| `tool/<tool>.py` | `BaseTool` 的薄协议适配器 | 输入校验、委托 `src/core/service`、映射 `ToolResult`，不含业务编排 |
+| `core/service/*.py` | 业务服务层（查询 / 集合 / 摘要 / 预载） | 检索编排、ChromaDB 访问、追踪，供 MCP 适配层调用 |
 
 #### 5.3.2 Core 层
 
@@ -2211,6 +2242,8 @@ dashboard:
 | J8 | 数据分析与查询解释能力预留 | [~] | - | 已以 `ToolPlan` 字段预留；不注册、不暴露 |
 | J9 | Claude / Codex MCP Client 兼容性验证 | [ ] | - | 待实施 |
 | J10 | 数据智能核心场景 E2E 验收 | [ ] | - | 待实施 |
+| J11 | MCP Server 双传输（stdio + Streamable HTTP） | [x] | 2026-08-21 | `--transport http` / `mcp-server-http`；`http_app.py` + `http_server.py`；HTTP 集成 + 真实端口 E2E 通过 |
+| J12 | KnowledgeService 业务服务层落地 | [x] | 2026-08-22 | 业务下沉 `src/core/service/`（query/collections/document_summary/preload）；MCP tool 瘦身为薄适配器；业务单测随迁 service 层 |
 
 ---
 
@@ -2227,7 +2260,7 @@ dashboard:
 | 阶段 G | 6 | 6 | 100% |
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
-| 阶段 J | 9 | 3 | 33% |
+| 阶段 J | 11 | 5 | 45% |
 | **总计** | **77** | **71** | **92%** |
 
 

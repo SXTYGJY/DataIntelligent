@@ -78,11 +78,32 @@ uv run python -c "from src.core.settings import load_settings; load_settings(); 
 |------|------|------|
 | **Ingestion Pipeline** | PDF → Markdown → Chunk → Transform → Embedding → Upsert | 全链路数据摄取，支持多模态图片描述（Image Captioning） |
 | **Hybrid Search** | Dense (向量) + Sparse (BM25) + RRF Fusion + Rerank | 粗排召回 + 精排重排的两段式检索架构 |
-| **MCP Server** | 标准 MCP 协议暴露 Tools + Prompts | `query_knowledge_hub`、`list_collections`、`get_document_summary`（`tools/list` / `tools/call` / `prompts/list` / `prompts/get`） |
+| **MCP Server** | 标准 MCP 协议暴露 Tools + Prompts，支持 stdio 与 Streamable HTTP 双传输 | `query_knowledge_hub`、`list_collections`、`get_document_summary`（`tools/list` / `tools/call` / `prompts/list` / `prompts/get`）；stdio 默认、HTTP 可选；MCP 侧仅协议适配，业务在 `src/core/service/` |
 | **Dashboard** | Streamlit 六页面管理平台 | 系统总览 / 数据浏览 / Ingestion 管理 / 摄取追踪 / 查询追踪 / 评估面板 |
 | **Evaluation** | Ragas + Custom 评估体系 | 支持 golden test set 回归测试，拒绝"凭感觉"调优 |
 | **Observability** | 全链路白盒化追踪 | Ingestion 与 Query 两条链路的每一个中间状态透明可见 |
 | **Skill 驱动全流程** | 从编写到测试、打包、配置一键完成 | auto-coder / qa-tester / package / setup 等 Skill 覆盖完整开发生命周期（笔记中每个 Skill 的使用和设计思路均有讲解，请参考配套视频） |
+
+### MCP Server 启动（stdio / HTTP）
+
+默认以 **stdio** 方式运行（与 Claude Desktop / Copilot 等 MCP Host 子进程模式兼容）：
+
+```bash
+uv run mcp-server            # 等价于 uv run python main.py
+```
+
+如需以 **Streamable HTTP** 方式对外提供 MCP 服务：
+
+```bash
+uv run mcp-server-http --host 127.0.0.1 --port 57666
+# 或
+uv run python -m src.mcp_server.server --transport http --host 127.0.0.1 --port 57666
+```
+
+- HTTP 端点默认挂载在 `http://127.0.0.1:57666/mcp`（SSE 响应、无状态会话，默认仅绑定本机）；
+- 绑定地址与端口可通过 `--host` / `--port` 覆盖，也可在 `config/settings.yaml` 的 `service:` 段配置；
+- stdio 与 HTTP 共用同一 `ToolRegistry`（3 个已发布工具行为一致）；
+- 注意：HTTP 模式没有 MCP 内置鉴权，默认只监听 `127.0.0.1`；如需远程访问请自行增加鉴权层。
 
 ### 技术亮点
 

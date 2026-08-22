@@ -32,7 +32,7 @@ Server 提供可发现、可调用、稳定的数据知识能力；LLM 推理、
 | D4 | executor 定位 | executor 是 `exec` 内部的实现模块，不对外导出、不独立公开 |
 | D5 | Prompt 暴露 | `list_prompt` / `get_prompt` 映射为 MCP `prompts/list` / `prompts/get`，对外暴露；`prompts/list` 返回**全部工具**，`prompts/get` 以 **user 消息**返回 prompt 文本（MCP SDK 1.x `PromptMessage.role` 仅允许 user/assistant；system 意图以 user 消息实现） |
 | D6 | 文件布局 | `base.py` 存放契约（`BaseTool` / `ToolMetadata` / `ToolResult` / `ToolContext`）；`tool_manager.py` 单文件存放 `ToolRegistry` 类 + 模块内 executor；两者同在 `src/mcp_server/tool/` 目录（取代 `tool_registry.py`） |
-| D7 | Transport | 协议与 Transport 解耦是**另立的大任务**，本文不展开、不排期；后续单独规划 stdio + Streamable HTTP |
+| D7 | Transport | 协议与 Transport 已解耦（2026-08-21）：stdio（默认）+ Streamable HTTP（可选）双传输落地，见 `src/mcp_server/http_app.py` / `http_server.py`；传输层不感知 Tool 细节，协议层保持单一 `ToolRegistry` 边界 |
 | D8 | from_dict | `BaseTool` **不保留** `from_dict`（工具为代码定义，非配置/DB 加载） |
 | D9 | structuredContent | `query_knowledge_hub` 的 citations 由 JSON 文本块改为 `ToolResult.structured_content` → `CallToolResult.structuredContent` |
 
@@ -289,5 +289,6 @@ MCP tools/call
 
 - 依赖：`PromptInfo` 结构已定稿（§3.4）；3 个工具的 prompt 文案先占位、`metadata` 先默认值；Transport 解耦另立大任务，不影响本排期；
 - 风险：3 工具内部依赖 Chroma/Embedding 等重组件，迁移时保持 `asyncio.to_thread` 与懒加载语义不变；
-- 范围外：Transport 解耦（stdio + Streamable HTTP）、KnowledgeService 层、MySQL 数据源、依赖清理（LangChain 去耦）均另立任务，不阻塞本排期。
+- 已推进：Transport 解耦（stdio + Streamable HTTP，见 `src/mcp_server/http_app.py` / `http_server.py`）与 KnowledgeService 层（见 `docs/design/service_layer_design.md`）已落地；
+- 范围外：MySQL 数据源、依赖清理（LangChain 去耦）仍另立任务，不阻塞本排期。
 

@@ -1,8 +1,9 @@
 """MCP Server entry point using official MCP SDK.
 
-This module implements the MCP server using the official Python MCP SDK
-with stdio transport. It ensures stdout only contains protocol messages
-while all logs go to stderr.
+This module implements the MCP server using the official Python MCP SDK.
+The default transport is stdio (stdout only carries protocol messages, all
+logs go to stderr); an optional Streamable HTTP transport is available via
+``--transport http`` (see :mod:`src.mcp_server.http_server`).
 """
 
 from __future__ import annotations
@@ -45,38 +46,26 @@ def _redirect_all_loggers_to_stderr() -> None:
 
 
 def _preload_heavy_imports() -> None:
-    """Eagerly import heavy third-party modules in the **main thread**.
+    """Preload heavy business dependencies before worker threads start.
 
-    MCP SDK uses anyio + background threads for stdin/stdout I/O.
-    When a tool handler runs ``asyncio.to_thread(fn)``, *fn* executes in
-    a new worker thread.  If it tries to ``import chromadb`` (which
-    transitively pulls in onnxruntime, numpy, sqlite3 C extensions …),
-    that import can deadlock with the stdin-reader thread because both
-    compete for Python's global *import lock*.
-
-    Pre-importing here – before anyio spins up its I/O threads – avoids
-    the deadlock entirely: subsequent ``import`` statements in worker
-    threads simply hit ``sys.modules`` and return immediately.
+    MCP tool execution offloads blocking work to ``asyncio.to_thread`` worker
+    threads; importing heavy libraries there can deadlock on Python's import
+    lock.  The list of business modules is owned by the business layer
+    (:func:`src.core.service.preload.preload_heavy_dependencies`), not by
+    the MCP server.
     """
-    # chromadb is the heaviest culprit (onnxruntime, numpy, …)
-    try:
-        import chromadb  # noqa: F401
-        import chromadb.config  # noqa: F401
-    except ImportError:
-        pass  # optional at install time
+    from src.core.service.preload import preload_heavy_dependencies
 
-    # Internal modules that tools lazy-import inside asyncio.to_thread
-    try:
-        import src.core.query_engine.dense_retriever  # noqa: F401
-        import src.core.query_engine.hybrid_search  # noqa: F401
-        import src.core.query_engine.query_processor  # noqa: F401
-        import src.core.query_engine.reranker  # noqa: F401
-        import src.core.query_engine.sparse_retriever  # noqa: F401
-        import src.ingestion.storage.bm25_indexer  # noqa: F401
-        import src.libs.embedding.embedding_factory  # noqa: F401
-        import src.libs.vector_store.vector_store_factory  # noqa: F401
-    except ImportError:
-        pass
+    preload_heavy_dependencies()
+
+
+def create_server():
+    """Create the shared low-level MCP server.
+
+    The same server (and therefore the same :class:`ToolRegistry`) is used by
+    both the stdio and the Streamable HTTP transports.
+    """
+    return create_mcp_server(SERVER_NAME, SERVER_VERSION)
 
 
 async def run_stdio_server_async() -> int:
@@ -98,8 +87,8 @@ async def run_stdio_server_async() -> int:
     logger = get_logger(log_level="INFO")
     logger.info("Starting MCP server (stdio transport) with official SDK.")
 
-    # Create server with protocol handler
-    server = create_mcp_server(SERVER_NAME, SERVER_VERSION)
+    # Create server with protocol handler (shared with HTTP transport)
+    server = create_server()
 
     # Run with stdio transport
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
@@ -123,7 +112,39 @@ def run_stdio_server() -> int:
 
 
 def main() -> int:
-    """Entry point for stdio MCP server."""
+    """Entry point for the MCP server (default: stdio transport).
+
+    Kept as the default for backward compatibility with MCP clients that
+    spawn the server as a subprocess (``python main.py`` / ``mcp-server``).
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Modular RAG MCP Server (stdio default, optional Streamable HTTP)."
+    )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Transport to serve on (default: stdio).",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address for --transport http (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=57666,
+        help="Bind port for --transport http (default: 57666).",
+    )
+    args = parser.parse_args()
+
+    if args.transport == "http":
+        from src.mcp_server.http_server import run_http_server
+
+        return run_http_server(host=args.host, port=args.port)
     return run_stdio_server()
 
 

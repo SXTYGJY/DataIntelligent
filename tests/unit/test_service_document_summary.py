@@ -1,7 +1,7 @@
-"""Unit tests for get_document_summary MCP tool.
+"""Unit tests for the document summary business service.
 
-This module tests the GetDocumentSummaryTool class that provides
-document summary retrieval capabilities through the MCP protocol.
+This module tests :class:`DocumentSummaryService` and the ``format_document_*``
+helpers in ``src.core.service.document_summary``.
 """
 
 from typing import Any
@@ -9,14 +9,13 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.mcp_server.tool.get_document_summary import (
-    TOOL_DESCRIPTION,
-    TOOL_INPUT_SCHEMA,
-    TOOL_NAME,
+from src.core.service.document_summary import (
     DocumentNotFoundError,
     DocumentSummary,
+    DocumentSummaryService,
     GetDocumentSummaryConfig,
-    GetDocumentSummaryTool,
+    format_document_error,
+    format_document_summary,
 )
 
 # =============================================================================
@@ -44,15 +43,15 @@ def mock_config() -> GetDocumentSummaryConfig:
 
 
 @pytest.fixture
-def tool_with_mock_settings(mock_settings: Mock) -> GetDocumentSummaryTool:
-    """Create GetDocumentSummaryTool with mock settings."""
-    return GetDocumentSummaryTool(settings=mock_settings)
+def service_with_mock_settings(mock_settings: Mock) -> DocumentSummaryService:
+    """Create DocumentSummaryService with mock settings."""
+    return DocumentSummaryService(settings=mock_settings)
 
 
 @pytest.fixture
-def tool_with_config(mock_config: GetDocumentSummaryConfig) -> GetDocumentSummaryTool:
-    """Create GetDocumentSummaryTool with explicit config."""
-    return GetDocumentSummaryTool(config=mock_config)
+def service_with_config(mock_config: GetDocumentSummaryConfig) -> DocumentSummaryService:
+    """Create DocumentSummaryService with explicit config."""
+    return DocumentSummaryService(config=mock_config)
 
 
 @pytest.fixture
@@ -110,39 +109,6 @@ def mock_collection(sample_chunks: list[dict[str, Any]]) -> Mock:
 
     collection.get = Mock(side_effect=mock_get)
     return collection
-
-
-# =============================================================================
-# Test: Tool Metadata Constants
-# =============================================================================
-
-class TestToolMetadata:
-    """Tests for tool metadata constants."""
-
-    def test_tool_name(self):
-        """Test TOOL_NAME is correctly defined."""
-        assert TOOL_NAME == "get_document_summary"
-
-    def test_tool_description_not_empty(self):
-        """Test TOOL_DESCRIPTION is not empty."""
-        assert TOOL_DESCRIPTION
-        assert len(TOOL_DESCRIPTION) > 50
-
-    def test_tool_input_schema_structure(self):
-        """Test TOOL_INPUT_SCHEMA has correct structure."""
-        assert TOOL_INPUT_SCHEMA["type"] == "object"
-        assert "properties" in TOOL_INPUT_SCHEMA
-        assert "required" in TOOL_INPUT_SCHEMA
-
-    def test_tool_input_schema_doc_id_required(self):
-        """Test doc_id is a required parameter."""
-        assert "doc_id" in TOOL_INPUT_SCHEMA["required"]
-        assert "doc_id" in TOOL_INPUT_SCHEMA["properties"]
-
-    def test_tool_input_schema_collection_optional(self):
-        """Test collection is an optional parameter."""
-        assert "collection" in TOOL_INPUT_SCHEMA["properties"]
-        assert "collection" not in TOOL_INPUT_SCHEMA["required"]
 
 
 # =============================================================================
@@ -267,35 +233,35 @@ class TestGetDocumentSummaryConfig:
 
 
 # =============================================================================
-# Test: GetDocumentSummaryTool Initialization
+# Test: DocumentSummaryService Initialization
 # =============================================================================
 
-class TestGetDocumentSummaryToolInit:
-    """Tests for GetDocumentSummaryTool initialization."""
+class TestDocumentSummaryServiceInit:
+    """Tests for DocumentSummaryService initialization."""
 
     def test_init_with_settings(self, mock_settings: Mock):
         """Test initialization with settings."""
-        tool = GetDocumentSummaryTool(settings=mock_settings)
-        assert tool._settings is mock_settings
-        assert tool._config is None
+        service = DocumentSummaryService(settings=mock_settings)
+        assert service._settings is mock_settings
+        assert service._config is None
 
     def test_init_with_config(self, mock_config: GetDocumentSummaryConfig):
         """Test initialization with explicit config."""
-        tool = GetDocumentSummaryTool(config=mock_config)
-        assert tool._config is mock_config
-        assert tool._settings is None
+        service = DocumentSummaryService(config=mock_config)
+        assert service._config is mock_config
+        assert service._settings is None
 
     def test_init_with_both(self, mock_settings: Mock, mock_config: GetDocumentSummaryConfig):
         """Test initialization with both settings and config."""
-        tool = GetDocumentSummaryTool(settings=mock_settings, config=mock_config)
-        assert tool._settings is mock_settings
-        assert tool._config is mock_config
+        service = DocumentSummaryService(settings=mock_settings, config=mock_config)
+        assert service._settings is mock_settings
+        assert service._config is mock_config
 
     def test_init_with_defaults(self):
         """Test initialization with no parameters."""
-        tool = GetDocumentSummaryTool()
-        assert tool._settings is None
-        assert tool._config is None
+        service = DocumentSummaryService()
+        assert service._settings is None
+        assert service._config is None
 
 
 # =============================================================================
@@ -307,8 +273,8 @@ class TestSettingsProperty:
 
     def test_settings_returns_provided_settings(self, mock_settings: Mock):
         """Test that provided settings are returned."""
-        tool = GetDocumentSummaryTool(settings=mock_settings)
-        assert tool.settings is mock_settings
+        service = DocumentSummaryService(settings=mock_settings)
+        assert service.settings is mock_settings
 
     @patch("src.core.settings.load_settings")
     def test_settings_lazy_loads_when_none(self, mock_load: Mock):
@@ -316,8 +282,8 @@ class TestSettingsProperty:
         mock_loaded = Mock()
         mock_load.return_value = mock_loaded
 
-        tool = GetDocumentSummaryTool()
-        result = tool.settings
+        service = DocumentSummaryService()
+        result = service.settings
 
         mock_load.assert_called_once()
         assert result is mock_loaded
@@ -332,16 +298,16 @@ class TestConfigProperty:
 
     def test_config_returns_provided_config(self, mock_config: GetDocumentSummaryConfig):
         """Test that provided config is returned."""
-        tool = GetDocumentSummaryTool(config=mock_config)
-        assert tool.config is mock_config
+        service = DocumentSummaryService(config=mock_config)
+        assert service.config is mock_config
 
     def test_config_derived_from_settings(self, mock_settings: Mock):
         """Test that config is derived from settings when not provided."""
         mock_settings.vector_store.persist_directory = "/settings/path"
         mock_settings.vector_store.collection_name = "settings_collection"
 
-        tool = GetDocumentSummaryTool(settings=mock_settings)
-        config = tool.config
+        service = DocumentSummaryService(settings=mock_settings)
+        config = service.config
 
         assert config.persist_directory == "/settings/path"
         assert config.default_collection == "settings_collection"
@@ -351,8 +317,8 @@ class TestConfigProperty:
         settings = Mock()
         settings.vector_store = None  # Will cause AttributeError
 
-        tool = GetDocumentSummaryTool(settings=settings)
-        config = tool.config
+        service = DocumentSummaryService(settings=settings)
+        config = service.config
 
         assert config.persist_directory == "data/db/chroma"
         assert config.default_collection == "knowledge_hub"
@@ -365,41 +331,41 @@ class TestConfigProperty:
 class TestTitleExtraction:
     """Tests for _extract_title method."""
 
-    def test_title_from_metadata(self, tool_with_config: GetDocumentSummaryTool):
+    def test_title_from_metadata(self, service_with_config: DocumentSummaryService):
         """Test title extraction from metadata."""
         metadata = {"title": "Explicit Title"}
-        result = tool_with_config._extract_title(metadata, "")
+        result = service_with_config._extract_title(metadata, "")
         assert result == "Explicit Title"
 
-    def test_title_from_markdown_heading(self, tool_with_config: GetDocumentSummaryTool):
+    def test_title_from_markdown_heading(self, service_with_config: DocumentSummaryService):
         """Test title extraction from markdown heading."""
         metadata = {}
         text = "# Document Title\n\nContent here"
-        result = tool_with_config._extract_title(metadata, text)
+        result = service_with_config._extract_title(metadata, text)
         assert result == "Document Title"
 
-    def test_title_from_source_path(self, tool_with_config: GetDocumentSummaryTool):
+    def test_title_from_source_path(self, service_with_config: DocumentSummaryService):
         """Test title extraction from source_path."""
         metadata = {"source_path": "/docs/my_test_document.pdf"}
-        result = tool_with_config._extract_title(metadata, "")
+        result = service_with_config._extract_title(metadata, "")
         assert result == "My Test Document"
 
-    def test_title_from_source_key(self, tool_with_config: GetDocumentSummaryTool):
+    def test_title_from_source_key(self, service_with_config: DocumentSummaryService):
         """Test title extraction from 'source' key."""
         metadata = {"source": "/docs/another-document.pdf"}
-        result = tool_with_config._extract_title(metadata, "")
+        result = service_with_config._extract_title(metadata, "")
         assert result == "Another Document"
 
-    def test_title_default_untitled(self, tool_with_config: GetDocumentSummaryTool):
+    def test_title_default_untitled(self, service_with_config: DocumentSummaryService):
         """Test default title when nothing available."""
-        result = tool_with_config._extract_title({}, "")
+        result = service_with_config._extract_title({}, "")
         assert result == "Untitled Document"
 
-    def test_title_priority_metadata_over_heading(self, tool_with_config: GetDocumentSummaryTool):
+    def test_title_priority_metadata_over_heading(self, service_with_config: DocumentSummaryService):
         """Test that metadata title has priority over markdown heading."""
         metadata = {"title": "Metadata Title"}
         text = "# Markdown Title\n\nContent"
-        result = tool_with_config._extract_title(metadata, text)
+        result = service_with_config._extract_title(metadata, text)
         assert result == "Metadata Title"
 
 
@@ -410,42 +376,42 @@ class TestTitleExtraction:
 class TestSummaryExtraction:
     """Tests for _extract_summary method."""
 
-    def test_summary_from_metadata(self, tool_with_config: GetDocumentSummaryTool):
+    def test_summary_from_metadata(self, service_with_config: DocumentSummaryService):
         """Test summary extraction from metadata."""
         chunks = [{'metadata': {'summary': 'Explicit summary'}, 'text': 'Content'}]
-        result = tool_with_config._extract_summary(chunks)
+        result = service_with_config._extract_summary(chunks)
         assert result == "Explicit summary"
 
-    def test_summary_from_first_chunk_text(self, tool_with_config: GetDocumentSummaryTool):
+    def test_summary_from_first_chunk_text(self, service_with_config: DocumentSummaryService):
         """Test summary extraction from first chunk content."""
         chunks = [{'metadata': {}, 'text': 'This is the document content.'}]
-        result = tool_with_config._extract_summary(chunks)
+        result = service_with_config._extract_summary(chunks)
         assert "This is the document content" in result
 
-    def test_summary_skips_headers(self, tool_with_config: GetDocumentSummaryTool):
+    def test_summary_skips_headers(self, service_with_config: DocumentSummaryService):
         """Test that summary skips markdown headers."""
         chunks = [{'metadata': {}, 'text': '# Title\n\n## Section\n\nActual content here.'}]
-        result = tool_with_config._extract_summary(chunks)
+        result = service_with_config._extract_summary(chunks)
         assert "Actual content here" in result
         assert "# Title" not in result
 
-    def test_summary_truncation(self, tool_with_config: GetDocumentSummaryTool):
+    def test_summary_truncation(self, service_with_config: DocumentSummaryService):
         """Test summary is truncated to max length."""
         long_text = "A" * 1000
         chunks = [{'metadata': {}, 'text': long_text}]
-        result = tool_with_config._extract_summary(chunks)
-        assert len(result) <= tool_with_config.config.summary_max_length
+        result = service_with_config._extract_summary(chunks)
+        assert len(result) <= service_with_config.config.summary_max_length
         assert result.endswith("...")
 
-    def test_summary_empty_chunks(self, tool_with_config: GetDocumentSummaryTool):
+    def test_summary_empty_chunks(self, service_with_config: DocumentSummaryService):
         """Test summary with empty chunks list."""
-        result = tool_with_config._extract_summary([])
+        result = service_with_config._extract_summary([])
         assert result == "No summary available."
 
-    def test_summary_no_content(self, tool_with_config: GetDocumentSummaryTool):
+    def test_summary_no_content(self, service_with_config: DocumentSummaryService):
         """Test summary when chunk has no text."""
         chunks = [{'metadata': {}, 'text': ''}]
-        result = tool_with_config._extract_summary(chunks)
+        result = service_with_config._extract_summary(chunks)
         assert "No" in result or "available" in result
 
 
@@ -456,37 +422,37 @@ class TestSummaryExtraction:
 class TestTagsExtraction:
     """Tests for _extract_tags method."""
 
-    def test_tags_from_list(self, tool_with_config: GetDocumentSummaryTool):
+    def test_tags_from_list(self, service_with_config: DocumentSummaryService):
         """Test tags extraction from list."""
         metadata = {'tags': ['python', 'testing', 'docs']}
-        result = tool_with_config._extract_tags(metadata)
+        result = service_with_config._extract_tags(metadata)
         assert 'python' in result
         assert 'testing' in result
         assert 'docs' in result
 
-    def test_tags_from_comma_string(self, tool_with_config: GetDocumentSummaryTool):
+    def test_tags_from_comma_string(self, service_with_config: DocumentSummaryService):
         """Test tags extraction from comma-separated string."""
         metadata = {'tags': 'python, testing, docs'}
-        result = tool_with_config._extract_tags(metadata)
+        result = service_with_config._extract_tags(metadata)
         assert 'python' in result
         assert 'testing' in result
         assert 'docs' in result
 
-    def test_tags_includes_doc_type(self, tool_with_config: GetDocumentSummaryTool):
+    def test_tags_includes_doc_type(self, service_with_config: DocumentSummaryService):
         """Test that doc_type is added as a tag."""
         metadata = {'doc_type': 'pdf'}
-        result = tool_with_config._extract_tags(metadata)
+        result = service_with_config._extract_tags(metadata)
         assert 'PDF' in result
 
-    def test_tags_no_duplicate_doc_type(self, tool_with_config: GetDocumentSummaryTool):
+    def test_tags_no_duplicate_doc_type(self, service_with_config: DocumentSummaryService):
         """Test that doc_type is not duplicated if already in tags."""
         metadata = {'tags': ['PDF', 'other'], 'doc_type': 'pdf'}
-        result = tool_with_config._extract_tags(metadata)
+        result = service_with_config._extract_tags(metadata)
         assert result.count('PDF') == 1
 
-    def test_tags_empty_metadata(self, tool_with_config: GetDocumentSummaryTool):
+    def test_tags_empty_metadata(self, service_with_config: DocumentSummaryService):
         """Test tags extraction with no tag-related metadata."""
-        result = tool_with_config._extract_tags({})
+        result = service_with_config._extract_tags({})
         assert result == []
 
 
@@ -497,7 +463,7 @@ class TestTagsExtraction:
 class TestMetadataFiltering:
     """Tests for _filter_metadata method."""
 
-    def test_filter_removes_internal_fields(self, tool_with_config: GetDocumentSummaryTool):
+    def test_filter_removes_internal_fields(self, service_with_config: DocumentSummaryService):
         """Test that internal fields are removed."""
         metadata = {
             'source_ref': 'doc_123',
@@ -506,33 +472,33 @@ class TestMetadataFiltering:
             'end_offset': 100,
             'author': 'Test Author',
         }
-        result = tool_with_config._filter_metadata(metadata)
+        result = service_with_config._filter_metadata(metadata)
 
         assert 'source_ref' not in result
         assert 'chunk_index' not in result
         assert 'author' in result
 
-    def test_filter_removes_underscore_prefix(self, tool_with_config: GetDocumentSummaryTool):
+    def test_filter_removes_underscore_prefix(self, service_with_config: DocumentSummaryService):
         """Test that underscore-prefixed fields are removed."""
         metadata = {
             '_placeholder': 'true',
             '_internal': 'value',
             'public_field': 'value',
         }
-        result = tool_with_config._filter_metadata(metadata)
+        result = service_with_config._filter_metadata(metadata)
 
         assert '_placeholder' not in result
         assert '_internal' not in result
         assert 'public_field' in result
 
-    def test_filter_keeps_user_fields(self, tool_with_config: GetDocumentSummaryTool):
+    def test_filter_keeps_user_fields(self, service_with_config: DocumentSummaryService):
         """Test that user-relevant fields are kept."""
         metadata = {
             'author': 'John Doe',
             'created_date': '2025-01-01',
             'page_count': 10,
         }
-        result = tool_with_config._filter_metadata(metadata)
+        result = service_with_config._filter_metadata(metadata)
 
         assert result['author'] == 'John Doe'
         assert result['created_date'] == '2025-01-01'
@@ -546,7 +512,7 @@ class TestMetadataFiltering:
 class TestChromaDBIntegration:
     """Tests for ChromaDB client and collection methods."""
 
-    def test_get_chroma_client_success(self, tool_with_config: GetDocumentSummaryTool):
+    def test_get_chroma_client_success(self, service_with_config: DocumentSummaryService):
         """Test successful ChromaDB client creation with mocked import."""
         mock_client = Mock()
         mock_chromadb = Mock()
@@ -554,47 +520,47 @@ class TestChromaDBIntegration:
 
         with patch.dict('sys.modules', {'chromadb': mock_chromadb, 'chromadb.config': Mock()}):
             # Reset client cache
-            tool_with_config._chroma_client = None
-            result = tool_with_config._get_chroma_client()
+            service_with_config._chroma_client = None
+            result = service_with_config._get_chroma_client()
 
         assert result is mock_client
         mock_chromadb.PersistentClient.assert_called_once()
 
-    def test_get_chroma_client_import_error(self, tool_with_config: GetDocumentSummaryTool):
+    def test_get_chroma_client_import_error(self, service_with_config: DocumentSummaryService):
         """Test ImportError when chromadb not installed."""
         # Reset cached client
-        tool_with_config._chroma_client = None
+        service_with_config._chroma_client = None
 
         with patch.dict('sys.modules', {'chromadb': None}):
             with pytest.raises(ImportError) as exc_info:
-                tool_with_config._get_chroma_client()
+                service_with_config._get_chroma_client()
 
             assert "chromadb" in str(exc_info.value)
 
-    def test_get_collection_success(self, tool_with_config: GetDocumentSummaryTool):
+    def test_get_collection_success(self, service_with_config: DocumentSummaryService):
         """Test successful collection retrieval."""
         mock_client = Mock()
         mock_collection = Mock()
         mock_client.get_collection.return_value = mock_collection
 
         # Mock _get_chroma_client to return our mock client
-        tool_with_config._get_chroma_client = Mock(return_value=mock_client)
+        service_with_config._get_chroma_client = Mock(return_value=mock_client)
 
-        result = tool_with_config._get_collection("test_collection")
+        result = service_with_config._get_collection("test_collection")
 
         assert result is mock_collection
         mock_client.get_collection.assert_called_once_with(name="test_collection")
 
-    def test_get_collection_not_found(self, tool_with_config: GetDocumentSummaryTool):
+    def test_get_collection_not_found(self, service_with_config: DocumentSummaryService):
         """Test error when collection doesn't exist."""
         mock_client = Mock()
         mock_client.get_collection.side_effect = Exception("Collection not found")
 
         # Mock _get_chroma_client to return our mock client
-        tool_with_config._get_chroma_client = Mock(return_value=mock_client)
+        service_with_config._get_chroma_client = Mock(return_value=mock_client)
 
         with pytest.raises(ValueError) as exc_info:
-            tool_with_config._get_collection("nonexistent")
+            service_with_config._get_collection("nonexistent")
 
         assert "nonexistent" in str(exc_info.value)
 
@@ -608,7 +574,7 @@ class TestFindDocumentChunks:
 
     def test_find_chunks_by_source_ref(
         self,
-        tool_with_config: GetDocumentSummaryTool,
+        service_with_config: DocumentSummaryService,
         sample_chunks: list[dict[str, Any]],
     ):
         """Test finding chunks by source_ref metadata."""
@@ -620,16 +586,16 @@ class TestFindDocumentChunks:
         }
 
         # Mock the _get_collection method
-        tool_with_config._get_collection = Mock(return_value=mock_collection)
+        service_with_config._get_collection = Mock(return_value=mock_collection)
 
-        result = tool_with_config._find_document_chunks("doc_abc123")
+        result = service_with_config._find_document_chunks("doc_abc123")
 
         assert len(result) == 3
         mock_collection.get.assert_called()
 
     def test_find_chunks_by_id_prefix(
         self,
-        tool_with_config: GetDocumentSummaryTool,
+        service_with_config: DocumentSummaryService,
         sample_chunks: list[dict[str, Any]],
     ):
         """Test finding chunks by ID prefix when source_ref search fails."""
@@ -647,24 +613,24 @@ class TestFindDocumentChunks:
         ]
 
         # Mock the _get_collection method
-        tool_with_config._get_collection = Mock(return_value=mock_collection)
+        service_with_config._get_collection = Mock(return_value=mock_collection)
 
-        result = tool_with_config._find_document_chunks("doc_abc123")
+        result = service_with_config._find_document_chunks("doc_abc123")
 
         assert len(result) == 3
 
     def test_find_chunks_not_found(
         self,
-        tool_with_config: GetDocumentSummaryTool,
+        service_with_config: DocumentSummaryService,
     ):
         """Test empty result when no chunks found."""
         mock_collection = Mock()
         mock_collection.get.return_value = {'ids': [], 'documents': [], 'metadatas': []}
 
         # Mock the _get_collection method
-        tool_with_config._get_collection = Mock(return_value=mock_collection)
+        service_with_config._get_collection = Mock(return_value=mock_collection)
 
-        result = tool_with_config._find_document_chunks("nonexistent_doc")
+        result = service_with_config._find_document_chunks("nonexistent_doc")
 
         assert result == []
 
@@ -678,7 +644,7 @@ class TestGetDocumentSummary:
 
     def test_get_summary_success(
         self,
-        tool_with_config: GetDocumentSummaryTool,
+        service_with_config: DocumentSummaryService,
         sample_chunks: list[dict[str, Any]],
     ):
         """Test successful document summary retrieval."""
@@ -690,9 +656,9 @@ class TestGetDocumentSummary:
         }
 
         # Mock the _get_collection method
-        tool_with_config._get_collection = Mock(return_value=mock_collection)
+        service_with_config._get_collection = Mock(return_value=mock_collection)
 
-        result = tool_with_config.get_document_summary("doc_abc123")
+        result = service_with_config.get_document_summary("doc_abc123")
 
         assert isinstance(result, DocumentSummary)
         assert result.doc_id == "doc_abc123"
@@ -703,23 +669,23 @@ class TestGetDocumentSummary:
 
     def test_get_summary_not_found(
         self,
-        tool_with_config: GetDocumentSummaryTool,
+        service_with_config: DocumentSummaryService,
     ):
         """Test DocumentNotFoundError when document doesn't exist."""
         mock_collection = Mock()
         mock_collection.get.return_value = {'ids': [], 'documents': [], 'metadatas': []}
 
         # Mock the _get_collection method
-        tool_with_config._get_collection = Mock(return_value=mock_collection)
+        service_with_config._get_collection = Mock(return_value=mock_collection)
 
         with pytest.raises(DocumentNotFoundError) as exc_info:
-            tool_with_config.get_document_summary("nonexistent_doc")
+            service_with_config.get_document_summary("nonexistent_doc")
 
         assert exc_info.value.doc_id == "nonexistent_doc"
 
     def test_get_summary_chunks_sorted_by_index(
         self,
-        tool_with_config: GetDocumentSummaryTool,
+        service_with_config: DocumentSummaryService,
     ):
         """Test that chunks are sorted by chunk_index."""
         # Provide chunks in wrong order
@@ -737,9 +703,9 @@ class TestGetDocumentSummary:
         }
 
         # Mock the _get_collection method
-        tool_with_config._get_collection = Mock(return_value=mock_collection)
+        service_with_config._get_collection = Mock(return_value=mock_collection)
 
-        result = tool_with_config.get_document_summary("doc_test")
+        result = service_with_config.get_document_summary("doc_test")
 
         # Title should be extracted from first chunk (chunk_index=0)
         assert result.title == "Title"
@@ -750,31 +716,31 @@ class TestGetDocumentSummary:
 # =============================================================================
 
 class TestFormatResponse:
-    """Tests for format_response method."""
+    """Tests for format_document_summary."""
 
-    def test_format_response_includes_title(self, tool_with_config: GetDocumentSummaryTool):
+    def test_format_response_includes_title(self, service_with_config: DocumentSummaryService):
         """Test formatted response includes title."""
         summary = DocumentSummary(
             doc_id="doc_123",
             title="Test Title",
             summary="Test summary",
         )
-        result = tool_with_config.format_response(summary)
+        result = format_document_summary(summary)
 
         assert "Test Title" in result
 
-    def test_format_response_includes_doc_id(self, tool_with_config: GetDocumentSummaryTool):
+    def test_format_response_includes_doc_id(self, service_with_config: DocumentSummaryService):
         """Test formatted response includes doc_id."""
         summary = DocumentSummary(
             doc_id="doc_abc123",
             title="Title",
             summary="Summary",
         )
-        result = tool_with_config.format_response(summary)
+        result = format_document_summary(summary)
 
         assert "doc_abc123" in result
 
-    def test_format_response_includes_tags(self, tool_with_config: GetDocumentSummaryTool):
+    def test_format_response_includes_tags(self, service_with_config: DocumentSummaryService):
         """Test formatted response includes tags."""
         summary = DocumentSummary(
             doc_id="doc_123",
@@ -782,12 +748,12 @@ class TestFormatResponse:
             summary="Summary",
             tags=["python", "testing"],
         )
-        result = tool_with_config.format_response(summary)
+        result = format_document_summary(summary)
 
         assert "python" in result
         assert "testing" in result
 
-    def test_format_response_includes_metadata(self, tool_with_config: GetDocumentSummaryTool):
+    def test_format_response_includes_metadata(self, service_with_config: DocumentSummaryService):
         """Test formatted response includes additional metadata."""
         summary = DocumentSummary(
             doc_id="doc_123",
@@ -795,7 +761,7 @@ class TestFormatResponse:
             summary="Summary",
             metadata={"author": "John Doe"},
         )
-        result = tool_with_config.format_response(summary)
+        result = format_document_summary(summary)
 
         assert "author" in result
         assert "John Doe" in result
@@ -806,106 +772,27 @@ class TestFormatResponse:
 # =============================================================================
 
 class TestFormatError:
-    """Tests for format_error method."""
+    """Tests for format_document_error."""
 
-    def test_format_document_not_found_error(self, tool_with_config: GetDocumentSummaryTool):
+    def test_format_document_not_found_error(self, service_with_config: DocumentSummaryService):
         """Test formatting DocumentNotFoundError."""
         error = DocumentNotFoundError("doc_123", "test_collection")
-        result = tool_with_config.format_error(error)
+        result = format_document_error(error)
 
         assert "Not Found" in result
         assert "doc_123" in result
 
-    def test_format_value_error(self, tool_with_config: GetDocumentSummaryTool):
+    def test_format_value_error(self, service_with_config: DocumentSummaryService):
         """Test formatting ValueError."""
         error = ValueError("Invalid parameter")
-        result = tool_with_config.format_error(error)
+        result = format_document_error(error)
 
         assert "Invalid" in result
 
-    def test_format_generic_error(self, tool_with_config: GetDocumentSummaryTool):
+    def test_format_generic_error(self, service_with_config: DocumentSummaryService):
         """Test formatting generic exception."""
         error = RuntimeError("Something went wrong")
-        result = tool_with_config.format_error(error)
+        result = format_document_error(error)
 
         assert "Error" in result
         assert "Something went wrong" in result
-
-
-# =============================================================================
-# Test: Execute Method (Async)
-# =============================================================================
-
-class TestExecuteMethod:
-    """Tests for execute async method."""
-
-    @pytest.mark.asyncio
-    async def test_execute_success(
-        self,
-        tool_with_config: GetDocumentSummaryTool,
-        sample_chunks: list[dict[str, Any]],
-    ):
-        """Test successful execution returns proper result."""
-        mock_collection = Mock()
-        mock_collection.get.return_value = {
-            'ids': [c['id'] for c in sample_chunks],
-            'documents': [c['text'] for c in sample_chunks],
-            'metadatas': [c['metadata'] for c in sample_chunks],
-        }
-
-        # Mock the _get_collection method
-        tool_with_config._get_collection = Mock(return_value=mock_collection)
-
-        result = await tool_with_config.execute(doc_id="doc_abc123")
-
-        assert result.is_error is False
-        assert len(result.content) == 1
-        assert result.content[0].type == "text"
-        assert "Test Document Title" in result.content[0].text
-        assert result.structured_content is not None
-        assert result.structured_content["doc_id"] == "doc_abc123"
-        assert result.structured_content["title"] == "Test Document Title"
-
-    @pytest.mark.asyncio
-    async def test_execute_document_not_found(
-        self,
-        tool_with_config: GetDocumentSummaryTool,
-    ):
-        """Test execution with non-existent document."""
-        mock_collection = Mock()
-        mock_collection.get.return_value = {'ids': [], 'documents': [], 'metadatas': []}
-
-        # Mock the _get_collection method
-        tool_with_config._get_collection = Mock(return_value=mock_collection)
-
-        result = await tool_with_config.execute(doc_id="nonexistent")
-
-        assert result.is_error is True
-        assert "Not Found" in result.content[0].text
-
-    @pytest.mark.asyncio
-    async def test_execute_with_collection(
-        self,
-        tool_with_config: GetDocumentSummaryTool,
-        sample_chunks: list[dict[str, Any]],
-    ):
-        """Test execution with specific collection."""
-        mock_collection = Mock()
-        mock_collection.get.return_value = {
-            'ids': [c['id'] for c in sample_chunks],
-            'documents': [c['text'] for c in sample_chunks],
-            'metadatas': [c['metadata'] for c in sample_chunks],
-        }
-
-        # Mock the _get_collection method to verify collection name
-        mock_get_collection = Mock(return_value=mock_collection)
-        tool_with_config._get_collection = mock_get_collection
-
-        result = await tool_with_config.execute(
-            doc_id="doc_abc123",
-            collection="custom_collection"
-        )
-
-        assert result.is_error is False
-        # Verify _get_collection was called (via _find_document_chunks)
-        mock_get_collection.assert_called()

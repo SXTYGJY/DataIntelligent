@@ -110,3 +110,10 @@ ingestion:
   metadata_enricher:
     use_llm: true  # Set to true to enable LLM-based enrichment (requires LLM config)
     # When use_llm is false or LLM call fails, falls back to rule-based enrichment
+
+# =============================================================================
+# Service Configuration (MCP Streamable HTTP)
+# =============================================================================
+service:
+  host: "127.0.0.1"   # 默认仅本机访问；远程访问需另行设计鉴权
+  port: 57666

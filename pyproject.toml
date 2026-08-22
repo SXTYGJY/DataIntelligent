@@ -28,6 +28,8 @@ dependencies = [
     "langchain-text-splitters>=0.3.0",
     "chromadb>=0.4.0",
     "mcp>=1.0.0,<2.0.0",  # v2 broke the v1 Tool/CallToolResult API used by this codebase
+    "starlette>=0.37",     # Streamable HTTP transport (transitive via mcp, pinned explicitly)
+    "uvicorn>=0.29",       # Streamable HTTP server (transitive via mcp, pinned explicitly)
     "jieba>=0.42",
     "markitdown[pdf]>=0.1.0",
     "streamlit>=1.30.0",
@@ -49,6 +51,7 @@ rerank = [
 
 [project.scripts]
 mcp-server = "src.mcp_server.server:main"
+mcp-server-http = "src.mcp_server.http_server:main"
 
 [dependency-groups]
 dev = [
